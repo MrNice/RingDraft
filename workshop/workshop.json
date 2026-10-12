@@ -1,0 +1,9 @@
+{
+  "title": "Ring Draft",
+  "description": "[h1]Your teammate drafts your deck.[/h1]\n\nA co-op mod. Players sit in a ring, and the player before you makes your build decisions while you keep playing your own turns.\n\n[h2]The player before you picks[/h2]\n[list]\n[*]Your card rewards (pick 1 of 3, or skip)\n[*]Your shop purchases, spending [b]your[/b] gold, including which card gets removed\n[*]Which card you upgrade, after [b]you[/b] choose Smith over Rest\n[*]Your Attack / Skill / Power potion choices and Toolbox-style relic choices\n[/list]\n\n[h2]You keep[/h2]\n[list]\n[*]Every combat turn, potion use and target\n[*]Events, chests, elite relics, gold and potion rewards\n[*]Rest vs Smith, and your map path\n[/list]\n\nWith 2 players it's a swap; with 3 or 4 it's a ring in seat order. Everyone picks for their neighbour at the same time, so nobody waits. If your picker stalls, you get a \"Choose myself\" button. Nothing is ever chosen for you automatically.\n\n[h2]Requirements[/h2]\n[b]Everyone in the lobby needs this mod.[/b] Built for v0.107.1.\n\nSettings: ringdraft_config.json in %APPDATA%\\SlayTheSpire2 (created on first launch). Each player can turn off shop delegation, card-effect choices and more, and change the timeouts. Problems? Post ringdraft_log.txt from the same folder.",
+  "visibility": "public",
+  "changeNote": "First release.",
+  "tags": [],
+  "dependencies": [],
+  "contentDescriptors": []
+}

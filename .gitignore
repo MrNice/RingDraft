@@ -4,3 +4,8 @@ obj/
 .vs/
 .idea/
 *.user
+build-log.txt
+dist/
+workshop/content/
+mod-uploader.log
+tools/

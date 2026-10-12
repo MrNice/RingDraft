@@ -39,4 +39,10 @@
     <Copy SourceFiles="$(TargetPath);$(MSBuildProjectDirectory)\RingDraft.json" DestinationFolder="$(Sts2Dir)\mods\RingDraft" />
     <Message Importance="high" Text="Ring Draft copied to $(Sts2Dir)\mods\RingDraft" />
   </Target>
+
+  <!-- Keeps the Steam Workshop upload folder current. -->
+  <Target Name="CopyToWorkshop" AfterTargets="Build">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\workshop\content" />
+    <Copy SourceFiles="$(TargetPath);$(MSBuildProjectDirectory)\RingDraft.json" DestinationFolder="$(MSBuildProjectDirectory)\workshop\content" />
+  </Target>
 </Project>
