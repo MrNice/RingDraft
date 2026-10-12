@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Tests the game-independent core without the game installed and without NuGet packages.
+       Run from the repo root: dotnet run (project tests/CoreTests) -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- The mod targets net9.0; any installed SDK >= 9 can run these. Override with -p:TestTargetFramework=net9.0 -->
+    <TestTargetFramework Condition="'$(TestTargetFramework)' == ''">net$(NETCoreAppMaximumVersion)</TestTargetFramework>
+    <TargetFramework>$(TestTargetFramework)</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Core/**/*.cs" Link="Core/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

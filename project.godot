@@ -1,0 +1,8 @@
+; Minimal Godot project file so Godot.NET.Sdk builds the mod assembly. Not a game project.
+config_version=5
+
+[application]
+config/name="RingDraft"
+
+[dotnet]
+project/assembly_name="RingDraft"

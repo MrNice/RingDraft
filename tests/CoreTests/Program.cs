@@ -1,0 +1,230 @@
+using RingDraft.Core;
+
+int failures = 0, passes = 0;
+void Check(bool ok, string name)
+{
+    if (ok) passes++;
+    else { failures++; Console.WriteLine($"FAIL  {name}"); }
+}
+
+const ulong A = 101, B = 202, C = 303, D = 404;
+
+// ---------- Ring ----------
+{
+    var two = new RingOrder(new[] { A, B });
+    Check(two.PickerFor(A) == B && two.PickerFor(B) == A, "2 players swap");
+
+    var four = new RingOrder(new[] { A, B, C, D });
+    Check(four.PickerFor(B) == A, "A picks for B");
+    Check(four.PickerFor(C) == B, "B picks for C");
+    Check(four.PickerFor(A) == D, "last seat wraps to pick for first");
+    Check(four.TargetOf(D) == A && four.TargetOf(A) == B, "TargetOf is inverse of PickerFor");
+    foreach (var p in four.Seats)
+        Check(four.PickerFor(four.TargetOf(p)!.Value) == p, $"round trip for seat {p}");
+
+    var gone = new HashSet<ulong> { A };
+    Check(four.PickerFor(B, id => !gone.Contains(id)) == D, "disconnected picker is skipped backwards");
+    gone = new HashSet<ulong> { A, C, D };
+    Check(four.PickerFor(B, id => !gone.Contains(id)) is null, "everyone else gone: owner keeps choice");
+
+    Check(new RingOrder(new[] { A }).PickerFor(A) is null, "solo: no picker");
+    Check(four.PickerFor(999) is null, "unknown player: no picker");
+
+    var rev = new RingOrder(new[] { A, B, C }, reverse: true);
+    Check(rev.PickerFor(A) == B && rev.PickerFor(B) == C && rev.PickerFor(C) == A, "reverse ring");
+
+    var dup = new RingOrder(new[] { A, B, A, C });
+    Check(dup.Count == 3, "duplicate seats collapse");
+}
+
+// ---------- Rules ----------
+{
+    var cfg = new RulesConfig();
+    DecisionKind? K(ScreenKind s, RoomKind r, string? rest = null, ChoiceSource src = ChoiceSource.Unknown, bool removal = false) =>
+        DelegationRules.Classify(new ScreenContext(s, r, rest, src, removal), cfg);
+
+    Check(K(ScreenKind.CardReward, RoomKind.Combat) == DecisionKind.CardReward, "combat card reward delegated");
+    Check(K(ScreenKind.CardReward, RoomKind.Other) == DecisionKind.CardReward, "post-combat card reward delegated");
+    Check(K(ScreenKind.CardReward, RoomKind.Event) is null, "event card reward stays with owner by default");
+
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Combat, src: ChoiceSource.Potion) == DecisionKind.GeneratedCardChoice, "Attack/Skill/Power potion delegated");
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Combat, src: ChoiceSource.Relic) == DecisionKind.GeneratedCardChoice, "Toolbox delegated");
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Combat, src: ChoiceSource.Card) is null, "card-effect choice stays with owner by default");
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Combat) == DecisionKind.GeneratedCardChoice, "unknown combat choice delegated by default");
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Event, src: ChoiceSource.Potion) is null, "generated choice outside combat (event) stays");
+
+    Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "SMITH") == DecisionKind.SmithUpgrade, "smith grid delegated after owner picks smith");
+    Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "smith_option") == DecisionKind.SmithUpgrade, "smith id match is case-insensitive substring");
+    Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "REST") is null, "non-smith rest grid stays");
+    Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: null) is null, "rest grid with unknown option stays");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Event) is null, "event deck grid (transform etc.) stays");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Merchant, removal: true) == DecisionKind.ShopRemovalPick, "shop removal grid resolved from picker's choice");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Merchant, removal: false) is null, "unexpected merchant grid stays");
+
+    Check(K(ScreenKind.ShopInventory, RoomKind.Merchant) == DecisionKind.Shop, "shop delegated");
+    Check(K(ScreenKind.Other, RoomKind.Treasure) is null, "treasure chest stays");
+    Check(K(ScreenKind.None, RoomKind.Combat) is null, "plain combat stays");
+
+    cfg.DelegateCardEffectChoices = true;
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Combat, src: ChoiceSource.Card) == DecisionKind.GeneratedCardChoice, "card-effect toggle works");
+    cfg.DelegateShop = false;
+    Check(K(ScreenKind.ShopInventory, RoomKind.Merchant) is null, "shop toggle works");
+
+    Check(DelegationRules.InferSource(10, lastPotionUse: 9.5, lastCardPlay: null, combatStart: 0) == ChoiceSource.Potion, "recent potion");
+    Check(DelegationRules.InferSource(10, lastPotionUse: 8, lastCardPlay: 9.5, combatStart: 0) == ChoiceSource.Card, "most recent wins (card)");
+    Check(DelegationRules.InferSource(10, lastPotionUse: 9.8, lastCardPlay: 9.0, combatStart: 0) == ChoiceSource.Potion, "most recent wins (potion)");
+    Check(DelegationRules.InferSource(1, null, null, combatStart: 0) == ChoiceSource.Relic, "combat start = relic");
+    Check(DelegationRules.InferSource(10, lastPotionUse: 1, lastCardPlay: 2, combatStart: 0) == ChoiceSource.Unknown, "stale events = unknown");
+}
+
+// ---------- Codec ----------
+{
+    var deck = new List<CardView> { new("MegaCrit.Sts2.Cards.Strike", "Strike", "Deal 6 damage.", 0), new("MegaCrit.Sts2.Cards.Bash", "Bash+", "Deal 10 damage. Apply 3 Vulnerable.", 1) };
+    var msgs = new Envelope[]
+    {
+        new OfferMsg(7, A, B, DecisionKind.CardReward, deck, true, deck, 123, new List<string> { "Burning Blood" }, 90),
+        new OfferMsg(8, A, B, DecisionKind.SmithUpgrade, new List<CardView>(), false, new List<CardView>(), 0, new List<string>(), 30),
+        new PickMsg(7, B, A, -1),
+        new ShopStateMsg(9, A, B, 250, new List<ShopItemView>
+        {
+            new(0, ShopItemType.Card, "x", "Pommel Strike", "Deal 9.", 50, true),
+            new(5, ShopItemType.CardRemoval, "", "Remove a card", "", 75, true),
+        }, deck, "Bought Pommel Strike", 90),
+        new ShopActionMsg(9, B, A, ShopActionType.Remove, 5, 1),
+        new CancelMsg(9, A, B, CancelReason.OwnerTookOver),
+    };
+
+    foreach (var m in msgs)
+    {
+        var bytes = Codec.Encode(m);
+        bool ok = Codec.TryDecode(bytes, out var back);
+        Check(ok && back is not null && back.GetType() == m.GetType(), $"decode {m.GetType().Name}");
+        Check(ok && Codec.Encode(back!).AsSpan().SequenceEqual(bytes), $"re-encode identical {m.GetType().Name}");
+        Check(Codec.TryFromBase64(Codec.ToBase64(m), out var b64) && b64 is not null && Codec.Encode(b64).AsSpan().SequenceEqual(bytes), $"base64 {m.GetType().Name}");
+
+        // Every truncation must fail cleanly, never throw.
+        bool allTruncFail = true;
+        for (int len = 0; len < bytes.Length; len++)
+            if (Codec.TryDecode(bytes[..len], out _)) allTruncFail = false;
+        Check(allTruncFail, $"all truncations rejected {m.GetType().Name}");
+
+        Check(!Codec.TryDecode(bytes.Concat(new byte[] { 0 }).ToArray(), out _), $"trailing byte rejected {m.GetType().Name}");
+    }
+
+    var o = (OfferMsg)msgs[0];
+    Codec.TryDecode(Codec.Encode(o), out var e0);
+    var o2 = (OfferMsg)e0!;
+    Check(o2.Options[1] == o.Options[1] && o2.Gold == 123 && o2.Relics[0] == "Burning Blood" && o2.CanSkip, "offer fields survive");
+
+    var wrongVersion = Codec.Encode(msgs[2]); wrongVersion[0] = 99;
+    Check(!Codec.TryDecode(wrongVersion, out _), "version mismatch rejected");
+    var badTag = Codec.Encode(msgs[2]); badTag[1] = 77;
+    Check(!Codec.TryDecode(badTag, out _), "unknown tag rejected");
+    Check(!Codec.TryFromBase64("not base64!!", out _), "garbage base64 rejected");
+    Check(!Codec.TryFromBase64(null, out _), "null rejected");
+
+    var rng = new Random(1234);
+    bool fuzzOk = true;
+    for (int i = 0; i < 20000; i++)
+    {
+        var junk = new byte[rng.Next(0, 64)];
+        rng.NextBytes(junk);
+        if (junk.Length > 0 && rng.Next(2) == 0) junk[0] = Codec.Version;
+        try { Codec.TryDecode(junk, out _); } catch { fuzzOk = false; break; }
+    }
+    Check(fuzzOk, "random bytes never throw");
+
+    bool tooLong = false;
+    try { Codec.Encode(new OfferMsg(1, A, B, DecisionKind.CardReward, Enumerable.Repeat(deck[0], 600).ToList(), false, new List<CardView>(), 0, new List<string>(), 1)); }
+    catch (ArgumentException) { tooLong = true; }
+    Check(tooLong, "oversized list refused on encode");
+}
+
+// ---------- Owner ledger ----------
+{
+    var ledger = new OwnerLedger(me: B, seed: 5);
+    var d = ledger.Open(DecisionKind.CardReward, picker: A, optionCount: 3, canSkip: true, now: 0, timeoutSeconds: 90);
+    Check(d.RequestId == 5, "seeded request ids");
+
+    Check(ledger.TryResolve(new PickMsg(d.RequestId, C, B, 0), C) == Verdict.WrongSender, "non-picker rejected");
+    Check(ledger.TryResolve(new PickMsg(d.RequestId, A, B, 0), C) == Verdict.WrongSender, "spoofed From rejected");
+    Check(ledger.TryResolve(new PickMsg(d.RequestId + 1, A, B, 0), A) == Verdict.UnknownRequest, "unknown request rejected");
+    Check(ledger.TryResolve(new PickMsg(d.RequestId, A, C, 0), A) == Verdict.UnknownRequest, "addressed to someone else rejected");
+    Check(ledger.TryResolve(new PickMsg(d.RequestId, A, B, 3), A) == Verdict.OutOfRange, "index past end rejected");
+    Check(ledger.TryResolve(new PickMsg(d.RequestId, A, B, -2), A) == Verdict.OutOfRange, "negative index rejected");
+    Check(ledger.TryResolve(new PickMsg(d.RequestId, A, B, 2), A) == Verdict.Accepted, "valid pick accepted");
+    Check(ledger.TryResolve(new PickMsg(d.RequestId, A, B, 1), A) == Verdict.AlreadyClosed, "duplicate pick rejected");
+
+    var smith = ledger.Open(DecisionKind.SmithUpgrade, A, optionCount: 10, canSkip: false, now: 0, timeoutSeconds: 90);
+    Check(ledger.TryResolve(new PickMsg(smith.RequestId, A, B, -1), A) == Verdict.OutOfRange, "skip refused when not allowed");
+    Check(ledger.Cancel(smith.RequestId), "cancel open decision");
+
+    var potion = ledger.Open(DecisionKind.GeneratedCardChoice, A, 3, false, now: 100, timeoutSeconds: 30);
+    Check(ledger.Tick(129).Count == 0, "not overdue before deadline");
+    var od = ledger.Tick(130);
+    Check(od.Count == 1 && od[0] == potion && potion.Overdue, "overdue at deadline");
+    Check(ledger.Tick(200).Count == 0, "overdue reported once");
+    Check(ledger.TryResolve(new PickMsg(potion.RequestId, A, B, 1), A) == Verdict.Accepted, "late pick still lands before take-over");
+
+    var taken = ledger.Open(DecisionKind.CardReward, A, 3, true, 0, 1);
+    Check(ledger.TakeOver(taken.RequestId), "take over");
+    Check(ledger.TryResolve(new PickMsg(taken.RequestId, A, B, 0), A) == Verdict.AlreadyClosed, "pick after take-over rejected");
+    Check(!ledger.TakeOver(taken.RequestId), "take over twice is a no-op");
+
+    var shop = ledger.Open(DecisionKind.Shop, A, 0, false, 0, 90);
+    var items = new List<ShopItemView>
+    {
+        new(0, ShopItemType.Card, "c", "Card", "", 50, true),
+        new(1, ShopItemType.Relic, "r", "Relic", "", 300, false),
+        new(9, ShopItemType.CardRemoval, "", "Remove", "", 75, true),
+    };
+    ShopActionMsg Act(ShopActionType t, int item = 0, int deckIdx = 0) => new(shop.RequestId, A, B, t, item, deckIdx);
+
+    Check(ledger.TryShopAction(Act(ShopActionType.Buy, 0), A, items, 12) == Verdict.Accepted, "buy affordable");
+    Check(shop.State == DecisionState.Waiting, "shop stays open after buy");
+    Check(ledger.TryShopAction(Act(ShopActionType.Buy, 1), A, items, 12) == Verdict.NotAffordable, "can't overspend target's gold");
+    Check(ledger.TryShopAction(Act(ShopActionType.Buy, 4), A, items, 12) == Verdict.OutOfRange, "missing item");
+    Check(ledger.TryShopAction(Act(ShopActionType.Buy, 9), A, items, 12) == Verdict.OutOfRange, "removal can't be bought as an item");
+    Check(ledger.TryShopAction(Act(ShopActionType.Remove, 0, 11), A, items, 12) == Verdict.Accepted, "remove valid deck card");
+    Check(ledger.TryShopAction(Act(ShopActionType.Remove, 0, 12), A, items, 12) == Verdict.OutOfRange, "remove out of deck range");
+    var noRemoval = items.Take(2).ToList();
+    Check(ledger.TryShopAction(Act(ShopActionType.Remove, 0, 1), A, noRemoval, 12) == Verdict.OutOfRange, "removal already used");
+    Check(ledger.TryResolve(new PickMsg(shop.RequestId, A, B, 0), A) == Verdict.WrongKind, "pick msg can't drive the shop");
+    Check(ledger.TryShopAction(Act(ShopActionType.Done), C, items, 12) == Verdict.WrongSender, "only picker can finish shop");
+    Check(ledger.TryShopAction(Act(ShopActionType.Done), A, items, 12) == Verdict.Accepted && shop.State == DecisionState.Resolved, "done closes shop");
+    Check(ledger.TryShopAction(Act(ShopActionType.Buy, 0), A, items, 12) == Verdict.AlreadyClosed, "no buying after done");
+
+    var cardDecision = ledger.Open(DecisionKind.CardReward, A, 3, true, 0, 90);
+    Check(ledger.TryShopAction(new ShopActionMsg(cardDecision.RequestId, A, B, ShopActionType.Done, 0, 0), A, items, 1) == Verdict.WrongKind, "shop msg can't drive a card reward");
+
+    ledger.Prune();
+    Check(ledger.Get(d.RequestId) is null && ledger.Get(cardDecision.RequestId) is not null, "prune drops closed only");
+}
+
+// ---------- Picker inbox ----------
+{
+    var inbox = new PickerInbox(me: A);
+    var offer = new OfferMsg(1, B, A, DecisionKind.CardReward, new List<CardView>(), true, new List<CardView>(), 0, new List<string>(), 90);
+    Check(!inbox.Receive(offer with { To = C }, B), "not for me ignored");
+    Check(!inbox.Receive(offer, C), "spoofed owner ignored");
+    Check(inbox.Receive(offer, B) && inbox.Count == 1, "offer queued");
+    Check(!inbox.Receive(offer, B) && inbox.Count == 1, "duplicate offer ignored");
+
+    var offer2 = offer with { From = D, RequestId = 1 };
+    Check(inbox.Receive(offer2, D) && inbox.Count == 2 && inbox.Current == offer, "second owner queues FIFO");
+
+    Check(inbox.Receive(new CancelMsg(1, B, A, CancelReason.OwnerTookOver), B) && inbox.Current == offer2, "cancel removes the right one");
+    Check(!inbox.Receive(new CancelMsg(42, B, A, CancelReason.ScreenClosed), B), "cancel for unknown ignored");
+
+    var s1 = new ShopStateMsg(3, D, A, 100, new List<ShopItemView>(), new List<CardView>(), "", 90);
+    var s2 = s1 with { Gold = 50, Notice = "bought" };
+    inbox.Receive(s1, D);
+    inbox.Receive(s2, D);
+    Check(inbox.Count == 2, "shop state refresh replaces in place");
+    inbox.Complete(D, 1);
+    Check(inbox.Current is ShopStateMsg s && s.Gold == 50, "refreshed shop state is current");
+    Check(!inbox.Receive(new PickMsg(1, B, A, 0), B), "picks never enter the inbox");
+}
+
+Console.WriteLine($"{passes} passed, {failures} failed");
+return failures == 0 ? 0 : 1;
