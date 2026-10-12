@@ -28,7 +28,6 @@ internal partial class RingDraftController : Node
 
     private readonly RingNet _net = new();
     private readonly HashSet<ulong> _handled = new();
-    private readonly HashSet<ulong> _wiredRestButtons = new();
     private readonly List<Job> _jobs = new();
 
     private PickerPanel _panel = null!;
@@ -37,7 +36,6 @@ internal partial class RingDraftController : Node
     private PickerInbox? _inbox;
     private Active? _active;
     private ulong? _shopNodeId;
-    private string? _lastRestOption;
     private CardView? _pendingRemoval;
     private double _pendingRemovalSince;
     private bool _wasInCombat;
@@ -89,14 +87,12 @@ internal partial class RingDraftController : Node
         if (_active is { } a) ReleaseBlocker(a);
         _active = null;
         _handled.Clear();
-        _wiredRestButtons.Clear();
         _jobs.Clear();
         _panel?.HideAll();
         _ledger = null;
         _inbox = null;
         _me = 0;
         _shopNodeId = null;
-        _lastRestOption = null;
         _pendingRemoval = null;
         _wasInCombat = false;
         SourceTracker.Reset();
@@ -109,9 +105,6 @@ internal partial class RingDraftController : Node
         bool inCombat = GameQuery.InCombat();
         if (inCombat && !_wasInCombat) SourceTracker.CombatStart = now;
         _wasInCombat = inCombat;
-
-        if (GameQuery.Room() == RoomKind.RestSite) WireRestButtons();
-        else { _lastRestOption = null; _wiredRestButtons.Clear(); }
 
         if (_pendingRemoval is not null && now - _pendingRemovalSince > 6)
         {
@@ -128,21 +121,6 @@ internal partial class RingDraftController : Node
         }
 
         _handled.RemoveWhere(id => GodotObject.InstanceFromId(id) is null);
-    }
-
-    /// <summary>Records which rest option the owner pressed, so only a Smith grid gets delegated.</summary>
-    private void WireRestButtons()
-    {
-        foreach (var b in GameQuery.RestButtons())
-        {
-            if ((object)b is not Control c || !_wiredRestButtons.Add(c.GetInstanceId())) continue;
-            var button = b;
-            c.GuiInput += e =>
-            {
-                if (e is not InputEventMouseMotion && e.IsPressed())
-                    _lastRestOption = GameQuery.RestOptionId(button);
-            };
-        }
     }
 
     // ---------------------------------------------------------------- network
@@ -171,7 +149,7 @@ internal partial class RingDraftController : Node
 
         // A removal the picker already chose: resolve the grid it opens, no round trip.
         if (_pendingRemoval is not null
-            && GameQuery.Classify(GameQuery.TopOverlay(), out var grid) == ScreenKind.DeckGrid
+            && GameQuery.Classify(GameQuery.TopOverlay(), out var grid, out _) == ScreenKind.DeckGrid
             && grid is not null && !_handled.Contains(grid.GetInstanceId()) && UiDriver.IsReady(grid))
         {
             _handled.Add(grid.GetInstanceId());
@@ -195,12 +173,14 @@ internal partial class RingDraftController : Node
         }
         _ledger.Prune();
 
-        var kindOfScreen = GameQuery.Classify(GameQuery.TopOverlay(), out var screen);
+        var kindOfScreen = GameQuery.Classify(GameQuery.TopOverlay(), out var screen, out bool isUpgradeGrid);
         if (screen is null) return;
         ulong id = screen.GetInstanceId();
         if (_handled.Contains(id)) return;
 
-        var ctx = new ScreenContext(kindOfScreen, GameQuery.Room(), _lastRestOption, SourceTracker.Infer(now), _pendingRemoval is not null);
+        // The upgrade grid only opens after the owner picks Smith at a rest site.
+        string? restOption = isUpgradeGrid ? "SMITH" : null;
+        var ctx = new ScreenContext(kindOfScreen, GameQuery.Room(), restOption, SourceTracker.Infer(now), _pendingRemoval is not null);
         var kind = DelegationRules.Classify(ctx, Config.Rules);
 
         if (kind == DecisionKind.ShopRemovalPick) return; // resolved by the block at the top once the grid is ready
@@ -284,6 +264,7 @@ internal partial class RingDraftController : Node
         if (!Nodes.Alive(a.Screen)) return;
 
         bool ok = p.OptionIndex == -1 ? UiDriver.PressSkip(a.Screen) : UiDriver.PressHolder(a.Screen, p.OptionIndex);
+        if (ok) WarnIfStillOpen(a.Screen, a.Kind);
         if (!ok)
         {
             Log.Warn($"Couldn't apply pick #{p.RequestId} (option {p.OptionIndex}); the screen is yours");
@@ -318,7 +299,7 @@ internal partial class RingDraftController : Node
             case ShopActionType.Buy:
             {
                 var (view, entry) = entries.First(e => e.View.Index == msg.ItemIndex);
-                if (GameQuery.Purchase(entry, inventory)) After(0.6, () => SendShopState($"Bought {view.Title}."));
+                if (inventory is not null && GameQuery.Purchase(entry, inventory, view.Title)) After(0.6, () => SendShopState($"Bought {view.Title}."));
                 else SendShopState($"Couldn't buy {view.Title}.");
                 break;
             }
@@ -328,7 +309,7 @@ internal partial class RingDraftController : Node
                 var removal = entries.First(e => e.View.Type == ShopItemType.CardRemoval);
                 _pendingRemoval = GameQuery.View(deck[msg.DeckIndex]);
                 _pendingRemovalSince = now;
-                if (!GameQuery.Purchase(removal.Entry, inventory))
+                if (inventory is null || !GameQuery.Purchase(removal.Entry, inventory, "card removal"))
                 {
                     _pendingRemoval = null;
                     SendShopState("Card removal didn't go through.");
@@ -423,6 +404,17 @@ internal partial class RingDraftController : Node
         Until = SourceTracker.Now() + 6,
         Interval = 0.2,
     });
+
+    /// <summary>Non-grid screens close themselves once a card is taken. If one doesn't, say so in the log.</summary>
+    private void WarnIfStillOpen(Node screen, DecisionKind kind)
+    {
+        if (UiDriver.IsGrid(screen)) return;
+        After(4, () =>
+        {
+            if (Nodes.Alive(screen) && GameQuery.TopOverlay() == screen)
+                Log.Warn($"{kind} screen still open 4s after applying the pick; the press may not have registered");
+        });
+    }
 
     private void RunJobs(double now)
     {

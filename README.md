@@ -73,16 +73,21 @@ tests/      dependency-free test runner for src/Core
 }
 ```
 
-## First build: what to check
+## Verified against the game
 
-The networking, screen classes, shop entries, and click/signal mechanics are copied from public, working StS2 mods (`sts2_typing`, `sts2-ai-mod`, `BetterSpire2`). Lines marked `// confirmed` in the code follow those mods. A few names are educated guesses accessed through reflection, so a wrong guess degrades gracefully instead of crashing. They're marked `// VERIFY`; check them against a decompile of `sts2.dll` (ILSpy or dnSpy):
+Every game type, member, signal and Harmony target the mod uses was checked against the metadata of `sts2.dll` **v0.107.1**, and the mod compiles cleanly against the real `sts2.dll`, `GodotSharp.dll` and `0Harmony.dll` (warnings as errors). The screens it watches are:
 
-1. **Namespaces.** If a `using MegaCrit...` line fails to compile, the type lives elsewhere. Search the decompile and fix the using.
-2. **Deck and relics** (`GameQuery.MyDeck`, `MyRelics`). If the picker's "Their deck" button says *not available*, find the player's deck property.
-3. **Card description** (`GameQuery.View`). Empty tooltips mean `Description` isn't the right member.
-4. **Potion and card-play hooks** (`SourceTracker`). The log says which method got patched. If neither did, potion choices count as "unknown", which is still delegated by default, but Discovery-style card choices will be too.
-5. **Event room detection** (`GameQuery.Room`) matches on the class name containing "Event".
-6. **Synthetic clicks** (`UiDriver.Click`). Used for Skip and Confirm. If Skip doesn't register, swap in whatever `sts2-ai-mod`'s `GodotMainThread.ClickAsync` does.
+| Screen | Game class |
+|---|---|
+| Card reward | `NCardRewardSelectionScreen` |
+| Potion / Toolbox / Discovery "choose a card" | `NChooseACardSelectionScreen` |
+| Smith upgrade | `NDeckUpgradeSelectScreen` (only appears after Smith is chosen) |
+| Shop removal | any `NCardGridSelectionScreen` opened by a removal the picker bought |
+| Shop | `NMerchantRoom.Instance.Inventory` while `IsOpen` |
+
+Potion use and card plays are timed through Harmony prefixes on `PotionModel.OnUseWrapper` and `CardModel.OnPlayWrapper`.
+
+What hasn't been exercised is the live game. Expect to tune behavior on the first co-op run. `ringdraft_log.txt` logs every hand-off, every pick applied, and every rejected message. If a game update renames something, the mod fails to compile rather than misbehaving quietly.
 
 ## Known gaps
 

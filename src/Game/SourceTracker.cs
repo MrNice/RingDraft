@@ -24,9 +24,8 @@ internal static class SourceTracker
     public static void Reset() => LastPotionUse = LastCardPlay = CombatStart = null;
 
     /// <summary>
-    /// First concrete method found, trying names in order. The game uses *Wrapper names for its
-    /// non-virtual entry points (e.g. OnTryPurchaseWrapper), so those go first.
-    /// VERIFY these against a decompile; the log says which one was patched or that none was found.
+    /// First concrete method found, trying names in order. PotionModel.OnUseWrapper and
+    /// CardModel.OnPlayWrapper exist in v0.107.1; the fallbacks cover a rename in a later patch.
     /// </summary>
     public static IEnumerable<MethodBase> Find(string typeName, params string[] methodNames)
     {
