@@ -1,5 +1,7 @@
 # Ring Draft
 
+**[Get it on the Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3818802815)**
+
 A Slay the Spire 2 co-op mod. Players sit in a ring, and the player before you makes your build decisions:
 
 | Decision | Who decides |
@@ -31,7 +33,11 @@ dotnet build -c Release
 dotnet build -c Release -p:Sts2Dir="D:\SteamLibrary\steamapps\common\Slay the Spire 2"
 ```
 
-The build copies `RingDraft.dll` and `RingDraft.json` into `<game>\mods\RingDraft\`. Launch with **Play with Mods**, enable Ring Draft in the Mods menu, restart, and host a co-op run. Send the same two files to everyone else.
+Or just double-click `build.bat` (output goes to `build-log.txt`). The build copies `RingDraft.dll` and `RingDraft.json` into `<game>\mods\RingDraft\` and into `workshop\content\`. If you're also subscribed on the Workshop, delete the `mods\RingDraft` copy before playing so the mod isn't loaded twice.
+
+Launch with **Play with Mods**, enable Ring Draft in the Mods menu, restart, and host a co-op run.
+
+To publish an update to the Workshop, run `upload.bat`. It needs Mega Crit's [ModUploader](https://github.com/megacrit/sts2-mod-uploader/releases) unzipped into `tools\ModUploader\` and Steam running.
 
 Core logic tests run without the game:
 
