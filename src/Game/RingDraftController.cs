@@ -49,6 +49,10 @@ internal partial class RingDraftController : Node
     private readonly HashSet<(ulong, uint)> _mirrored = new();
     private readonly HashSet<ulong> _rewardButtonsTried = new();
     private double _holdNativeUntil;
+    // Picker side: the copy of a neighbour's shop on the game's merchant rug, and the state it last showed.
+    private MimicShop? _mimic;
+    private ShopStateMsg? _mimicShown;
+    private readonly HashSet<(ulong, uint)> _mimicFailed = new();
     // A pick for this player's own screen that arrived while they were still choosing for a neighbour.
     private (PickMsg Pick, ulong Sender)? _deferredPick;
 
@@ -101,6 +105,8 @@ internal partial class RingDraftController : Node
         _handled.Clear();
         _jobs.Clear();
         CloseNative();
+        CloseMimic();
+        _mimicFailed.Clear();
         _autoOpened.Clear();
         _pickerScreens.Clear();
         _mirrored.Clear();
@@ -416,6 +422,7 @@ internal partial class RingDraftController : Node
 
         // The offer behind an open game screen was cancelled or replaced: take the screen down.
         if (_native is { } open && !ReferenceEquals(open.Offer, current)) CloseNative();
+        if (_mimic is { } m && (current is not ShopStateMsg cs || cs.From != m.Owner || cs.RequestId != m.RequestId)) CloseMimic();
 
         if (current is null)
         {
@@ -437,7 +444,8 @@ internal partial class RingDraftController : Node
             _autoOpened.Add((offer.From, offer.RequestId));
             OpenNative(offer);
         }
-        _panel.SetSuppressed(_native is not null);
+        if (current is ShopStateMsg shopState) StepMimic(shopState);
+        _panel.SetSuppressed(_native is not null || _mimic is not null);
         if (ReferenceEquals(_panel.Shown, current)) return;
 
         string owner = _net.NameOf(current.From);
@@ -469,6 +477,58 @@ internal partial class RingDraftController : Node
         && NativeScreens.Supports(o)
         && !GameQuery.InCombat()
         && !_autoOpened.Contains((o.From, o.RequestId));
+
+    /// <summary>Shows the neighbour's shop on the game's own merchant rug, and keeps it in step with each new state.</summary>
+    private void StepMimic(ShopStateMsg s)
+    {
+        if (!Config.Rules.UseGameScreens || _mimicFailed.Contains((s.From, s.RequestId))) return;
+        if (_mimic is not null && ReferenceEquals(_mimicShown, s)) return;
+
+        if (_mimic is not null && _mimic.Refresh(s))
+        {
+            _mimicShown = s;
+            return;
+        }
+        CloseMimic();
+        if (!MimicShop.CanOpen()) return;
+
+        ulong owner = s.From;
+        uint request = s.RequestId;
+        int removalIndex = s.Items.FirstOrDefault(i => i.Type == ShopItemType.CardRemoval)?.Index ?? -1;
+        var actions = new MimicShop.Actions(
+            Buy: index => _net.Send(new ShopActionMsg(request, _me, owner, ShopActionType.Buy, index, -1)),
+            Remove: deckIndex => _net.Send(new ShopActionMsg(request, _me, owner, ShopActionType.Remove, removalIndex, deckIndex)),
+            Done: () =>
+            {
+                _mimic = null;
+                _mimicShown = null;
+                _net.Send(new ShopActionMsg(request, _me, owner, ShopActionType.Done, -1, -1));
+                _inbox?.Complete(owner, request);
+                Log.Info($"Finished shopping for {_net.NameOf(owner)}");
+            },
+            PickerScreenOpened: screen => _pickerScreens.Add(screen.GetInstanceId()));
+
+        MimicShop? shop = null;
+        try { shop = MimicShop.Open(s, _net.NameOf(owner), actions); }
+        catch (Exception ex) { Log.Error("Opening the copy of the shop failed", ex); }
+        if (shop is null)
+        {
+            _mimicFailed.Add((owner, request));
+            Log.Warn($"Couldn't show {_net.NameOf(owner)}'s shop on the merchant rug; using the list instead");
+            return;
+        }
+        _mimic = shop;
+        _mimicShown = s;
+        Log.Info($"Opened {_net.NameOf(owner)}'s shop (#{request})");
+    }
+
+    private void CloseMimic()
+    {
+        if (_mimic is not { } m) return;
+        _mimic = null;
+        _mimicShown = null;
+        m.Close();
+    }
 
     private bool OpenMyCardRewardToo(double now)
     {

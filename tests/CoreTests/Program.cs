@@ -102,6 +102,8 @@ const ulong A = 101, B = 202, C = 303, D = 404;
         {
             new(0, ShopItemType.Card, "x", "Pommel Strike", "Deal 9.", 50, true),
             new(5, ShopItemType.CardRemoval, "", "Remove a card", "", 75, true),
+            new(2, ShopItemType.Card, "y", "Shrug It Off", "Gain 8 Block.", 37, true, Stocked: true, BaseCost: 75, OnSale: true, Blob: "AQID"),
+            new(3, ShopItemType.Relic, "", "", "", 0, false, Stocked: false),
         }, deck, "Bought Pommel Strike", 90),
         new ShopActionMsg(9, B, A, ShopActionType.Remove, 5, 1),
         new CancelMsg(9, A, B, CancelReason.OwnerTookOver),
@@ -123,6 +125,12 @@ const ulong A = 101, B = 202, C = 303, D = 404;
 
         Check(!Codec.TryDecode(bytes.Concat(new byte[] { 0 }).ToArray(), out _), $"trailing byte rejected {m.GetType().Name}");
     }
+
+    Codec.TryDecode(Codec.Encode(msgs[3]), out var shopBack);
+    var shopItems = ((ShopStateMsg)shopBack!).Items;
+    Check(shopItems[2] == new ShopItemView(2, ShopItemType.Card, "y", "Shrug It Off", "Gain 8 Block.", 37, true, true, 75, true, "AQID"),
+        "shop slot keeps stock, base cost, sale and card");
+    Check(!shopItems[3].Stocked && shopItems[0].Stocked, "sold-out slot round-trips");
 
     var o = (OfferMsg)msgs[0];
     Codec.TryDecode(Codec.Encode(o), out var e0);
@@ -210,6 +218,9 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Check(ledger.TryShopAction(Act(ShopActionType.Buy, 9), A, items, 12) == Verdict.OutOfRange, "removal can't be bought as an item");
     Check(ledger.TryShopAction(Act(ShopActionType.Remove, 0, 11), A, items, 12) == Verdict.Accepted, "remove valid deck card");
     Check(ledger.TryShopAction(Act(ShopActionType.Remove, 0, 12), A, items, 12) == Verdict.OutOfRange, "remove out of deck range");
+    var soldOut = new List<ShopItemView> { items[0] with { Stocked = false }, items[1], items[2] with { Stocked = false } };
+    Check(ledger.TryShopAction(Act(ShopActionType.Buy, 0), A, soldOut, 12) == Verdict.OutOfRange, "sold-out slot can't be bought");
+    Check(ledger.TryShopAction(Act(ShopActionType.Remove, 0, 1), A, soldOut, 12) == Verdict.OutOfRange, "used removal can't be bought again");
     var noRemoval = items.Take(2).ToList();
     Check(ledger.TryShopAction(Act(ShopActionType.Remove, 0, 1), A, noRemoval, 12) == Verdict.OutOfRange, "removal already used");
     Check(ledger.TryResolve(new PickMsg(shop.RequestId, A, B, 0), A) == Verdict.WrongKind, "pick msg can't drive the shop");

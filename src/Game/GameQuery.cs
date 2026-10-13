@@ -135,7 +135,10 @@ internal static class GameQuery
         return RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom is MerchantRoom room ? room.GetLocalInventory() : null;
     }
 
-    /// <summary>Stocked shop entries in a stable order; the view's Index is the position in this list.</summary>
+    /// <summary>
+    /// Every merchant slot in a fixed order, sold-out ones included (Stocked = false); the view's Index is the slot's position,
+    /// so it never shifts when something is bought.
+    /// </summary>
     public static List<(ShopItemView View, MerchantEntry Entry)> ShopEntries(out MerchantInventory? inventory)
     {
         var result = new List<(ShopItemView, MerchantEntry)>();
@@ -145,27 +148,41 @@ internal static class GameQuery
         void Add(IEnumerable<MerchantEntry> entries, ShopItemType type)
         {
             foreach (var e in entries)
-                if (e.IsStocked)
-                    result.Add((Describe(e, type, result.Count), e));
+                result.Add((Describe(e, type, result.Count), e));
         }
 
         Add(inventory.CharacterCardEntries, ShopItemType.Card);
         Add(inventory.ColorlessCardEntries, ShopItemType.ColorlessCard);
         Add(inventory.RelicEntries, ShopItemType.Relic);
         Add(inventory.PotionEntries, ShopItemType.Potion);
-        if (inventory.CardRemovalEntry is { IsStocked: true } removal)
+        if (inventory.CardRemovalEntry is { } removal)
             result.Add((Describe(removal, ShopItemType.CardRemoval, result.Count), removal));
         return result;
     }
 
+    private static readonly System.Reflection.FieldInfo? RawCostField =
+        typeof(MerchantEntry).GetField("_cost", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+    /// <summary>The price before relic discounts. The picker's game applies those itself when it shows the copy.</summary>
+    public static int RawCost(MerchantEntry e)
+    {
+        try { return RawCostField?.GetValue(e) is int c ? c : e.Cost; }
+        catch { return e.Cost; }
+    }
+
     private static ShopItemView Describe(MerchantEntry e, ShopItemType type, int index)
     {
-        string id = "", title = "Remove a card", desc = "";
+        if (!e.IsStocked)
+            return new ShopItemView(index, type, "", "", "", 0, false, Stocked: false);
+
+        string id = "", title = "Remove a card", desc = "", blob = "";
+        bool onSale = false;
         switch (e)
         {
             case MerchantCardEntry card:
-                var v = View(card.CreationResult?.Card);
-                id = v.Id; title = v.Title; desc = v.Description;
+                var v = View(card.CreationResult?.Card, withCardData: true);
+                id = v.Id; title = v.Title; desc = v.Description; blob = v.Blob;
+                onSale = card.IsOnSale;
                 break;
             case MerchantRelicEntry { Model: { } relic }:
                 id = relic.GetType().FullName ?? "";
@@ -178,7 +195,7 @@ internal static class GameQuery
                 desc = Text(() => potion.DynamicDescription.GetFormattedText());
                 break;
         }
-        return new ShopItemView(index, type, id, title, desc, e.Cost, e.EnoughGold);
+        return new ShopItemView(index, type, id, title, desc, e.Cost, e.EnoughGold, true, RawCost(e), onSale, blob);
     }
 
     /// <summary>Buys through the merchant exactly as clicking the slot would.</summary>

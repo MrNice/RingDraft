@@ -11,7 +11,13 @@ public sealed record CardView(string Id, string Title, string Description, int U
 
 public enum ShopItemType : byte { Card = 0, ColorlessCard = 1, Relic = 2, Potion = 3, CardRemoval = 4 }
 
-public sealed record ShopItemView(int Index, ShopItemType Type, string Id, string Title, string Description, int Cost, bool Affordable);
+/// <summary>
+/// One merchant slot. Index is the slot's fixed position in the owner's shop (sold-out slots keep theirs and are sent with
+/// Stocked = false), so the picker's copy of the shop can keep every item in its place. BaseCost is the price before relic
+/// discounts, which the picker's game applies itself; Blob is the card itself for card slots, as in <see cref="CardView"/>.
+/// </summary>
+public sealed record ShopItemView(int Index, ShopItemType Type, string Id, string Title, string Description, int Cost, bool Affordable,
+    bool Stocked = true, int BaseCost = 0, bool OnSale = false, string Blob = "");
 
 public enum ShopActionType : byte { Buy = 0, Remove = 1, Done = 2 }
 
@@ -83,7 +89,7 @@ public sealed record CancelMsg(uint RequestId, ulong From, ulong To, CancelReaso
 /// </summary>
 public static class Codec
 {
-    public const byte Version = 2;
+    public const byte Version = 3;
     private const int MaxList = 512;
     private const int MaxString = 4096;
     private const int MaxBlob = 2048;
@@ -133,6 +139,8 @@ public static class Codec
                 {
                     w.Write(i.Index); w.Write((byte)i.Type); Str(w, i.Id); Str(w, i.Title); Str(w, i.Description);
                     w.Write(i.Cost); w.Write(i.Affordable);
+                    w.Write(i.Stocked); w.Write(i.BaseCost); w.Write(i.OnSale);
+                    w.Write(i.Blob is { Length: <= MaxBlob } blob ? blob : string.Empty);
                 }
                 Cards(w, s.Deck);
                 Str(w, s.Notice);
@@ -200,7 +208,11 @@ public static class Codec
                         int index = r.ReadInt32();
                         var type = (ShopItemType)r.ReadByte();
                         if (!Enum.IsDefined(type)) return false;
-                        items.Add(new ShopItemView(index, type, ReadStr(r), ReadStr(r), ReadStr(r), r.ReadInt32(), r.ReadBoolean()));
+                        var item = new ShopItemView(index, type, ReadStr(r), ReadStr(r), ReadStr(r), r.ReadInt32(), r.ReadBoolean(),
+                            r.ReadBoolean(), r.ReadInt32(), r.ReadBoolean());
+                        var itemBlob = r.ReadString();
+                        if (itemBlob.Length > MaxBlob) throw new FormatException("Card blob too long");
+                        items.Add(item with { Blob = itemBlob });
                     }
                     var deck = ReadCards(r);
                     string notice = ReadStr(r);

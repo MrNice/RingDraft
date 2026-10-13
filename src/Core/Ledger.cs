@@ -96,14 +96,14 @@ public sealed class OwnerLedger
             case ShopActionType.Buy:
             {
                 var item = items.FirstOrDefault(i => i.Index == msg.ItemIndex);
-                if (item is null || item.Type == ShopItemType.CardRemoval) return Verdict.OutOfRange;
+                if (item is null || !item.Stocked || item.Type == ShopItemType.CardRemoval) return Verdict.OutOfRange;
                 return item.Affordable ? Verdict.Accepted : Verdict.NotAffordable;
             }
 
             case ShopActionType.Remove:
             {
                 var removal = items.FirstOrDefault(i => i.Type == ShopItemType.CardRemoval);
-                if (removal is null) return Verdict.OutOfRange;
+                if (removal is null || !removal.Stocked) return Verdict.OutOfRange;
                 if (msg.DeckIndex < 0 || msg.DeckIndex >= deckCount) return Verdict.OutOfRange;
                 return removal.Affordable ? Verdict.Accepted : Verdict.NotAffordable;
             }

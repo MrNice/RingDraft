@@ -1,0 +1,448 @@
+using System.Reflection;
+using Godot;
+using HarmonyLib;
+using MegaCrit.Sts2.Core.CardSelection;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Merchant;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
+using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
+using MegaCrit.Sts2.Core.Nodes.Screens.Shops;
+using MegaCrit.Sts2.Core.Rooms;
+using RingDraft.Core;
+
+namespace RingDraft;
+
+/// <summary>
+/// The picker's copy of the owner's shop, on the game's own merchant rug. It is built from the owner's
+/// ShopStateMsg, never from the picker's own copy of the run, and nothing on it can buy anything: a click
+/// becomes a ShopActionMsg, and the owner's client makes the real purchase and sends back the new state.
+/// </summary>
+internal sealed class MimicShop
+{
+    public sealed record Actions(Action<int> Buy, Action<int> Remove, Action Done, Action<Node> PickerScreenOpened);
+
+    /// <summary>The copy on screen, if any. The purchase patches below check inventories against it.</summary>
+    public static MimicShop? Current { get; private set; }
+
+    public ulong Owner { get; }
+    public uint RequestId { get; }
+    public NMerchantInventory Node { get; }
+    public MerchantInventory Inventory { get; }
+
+    private readonly Actions _actions;
+    private readonly Player _owner;
+    private readonly string _ownerName;
+    private readonly Dictionary<int, MerchantEntry> _slots;
+    private readonly Label _header;
+    private ShopStateMsg _state;
+    private double _busyUntil;
+    private bool _closing;
+    private Node? _removalScreen;
+
+    private MimicShop(ShopStateMsg s, Player owner, string ownerName, NMerchantInventory node, MerchantInventory inventory,
+        Dictionary<int, MerchantEntry> slots, Label header, Actions actions)
+    {
+        Owner = s.From;
+        RequestId = s.RequestId;
+        _state = s;
+        _owner = owner;
+        _ownerName = ownerName;
+        Node = node;
+        Inventory = inventory;
+        _slots = slots;
+        _header = header;
+        _actions = actions;
+    }
+
+    public static bool CanOpen() => NMerchantRoom.Instance is { } room && Nodes.Alive(room) && room.Room is not null;
+
+    /// <summary>Lays the owner's shop out on a second merchant rug, above the picker's own. Null if anything is missing.</summary>
+    public static MimicShop? Open(ShopStateMsg s, string ownerName, Actions actions)
+    {
+        if (Current is not null) Current.Close();
+        var room = NMerchantRoom.Instance;
+        var owner = GameQuery.PlayerById(s.From);
+        if (room?.Room is null || owner is null) return null;
+
+        var (inventory, slots) = Build(s, owner);
+        if (inventory is null) return null;
+
+        var node = SceneHelper.Instantiate<NMerchantInventory>("merchant/merchant_inventory");
+        node.Name = "RingDraftShop";
+        var own = room.Inventory;
+        var parent = own?.GetParent() ?? room;
+        parent.AddChild(node);
+        if (own is not null) parent.MoveChild(node, own.GetIndex() + 1);
+
+        try
+        {
+            node.Initialize(inventory, MerchantRoom.Dialogue);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Setting up the copy of the shop failed", ex);
+            node.QueueFree();
+            return null;
+        }
+
+        var header = Style.Label("", 24, Style.Accent);
+        header.HorizontalAlignment = HorizontalAlignment.Center;
+        header.MouseFilter = Control.MouseFilterEnum.Ignore;
+        header.AnchorLeft = 0; header.AnchorRight = 1; header.OffsetTop = 18; header.OffsetBottom = 60;
+        node.AddChild(header);
+
+        var shop = new MimicShop(s, owner, ownerName, node, inventory, slots, header, actions);
+        Current = shop;
+        node.Connect(NMerchantInventory.SignalName.InventoryClosed, Callable.From(shop.OnInventoryClosed));
+        node.Open();
+        shop.UpdateHeader();
+        ActiveScreenContext.Instance?.Update();
+        return shop;
+    }
+
+    /// <summary>
+    /// Applies a fresh state from the owner: sold items disappear, restocked ones appear, prices follow the owner's gold.
+    /// Returns false if the shop's layout changed, in which case the caller opens a new copy.
+    /// </summary>
+    public bool Refresh(ShopStateMsg s)
+    {
+        if (s.From != Owner || s.RequestId != RequestId) return false;
+        if (s.Items.Count != _slots.Count || s.Items.Any(i => !_slots.ContainsKey(i.Index))) return false;
+
+        bool removalUsedNow = false;
+        foreach (var item in s.Items)
+        {
+            var entry = _slots[item.Index];
+            bool wasStocked = entry.IsStocked;
+            if (!Fill(entry, item, _owner)) return false;
+            if (item.Type == ShopItemType.CardRemoval && wasStocked && !item.Stocked) removalUsedNow = true;
+            EntryUpdated(entry);
+        }
+        if (removalUsedNow) Call(Node, "OnCardRemovalUsed");
+
+        _state = s;
+        _busyUntil = 0;
+        UpdateHeader(s.Notice);
+        return true;
+    }
+
+    /// <summary>Takes the copy down without telling the owner anything.</summary>
+    public void Close()
+    {
+        if (_closing) return;
+        _closing = true;
+        if (Current == this) Current = null;
+        if (_removalScreen is not null) NativeScreens.Close(_removalScreen);
+        try
+        {
+            if (Nodes.Alive(Node))
+            {
+                if (Node.IsOpen) Call(Node, "Close"); // the game keeps Close private; its back button calls it
+                var timer = Node.GetTree()?.CreateTimer(0.6);
+                if (timer is not null) timer.Timeout += () => { if (Nodes.Alive(Node)) Node.QueueFree(); };
+                else Node.QueueFree();
+            }
+        }
+        catch (Exception ex) { Log.Error("Closing the copy of the shop failed", ex); }
+        ActiveScreenContext.Instance?.Update();
+    }
+
+    // ------------------------------------------------------------------ clicks
+
+    /// <summary>A click on one of the copy's slots. Never buys anything here.</summary>
+    internal Task<bool> OnClick(MerchantEntry entry)
+    {
+        int index = _slots.FirstOrDefault(kv => ReferenceEquals(kv.Value, entry)).Key;
+        if (!_slots.TryGetValue(index, out var found) || !ReferenceEquals(found, entry)) return Task.FromResult(false);
+        if (SourceTracker.Now() < _busyUntil || _removalScreen is not null) return Task.FromResult(false);
+
+        if (!entry.IsStocked) { Failed(entry, PurchaseStatus.FailureOutOfStock); return Task.FromResult(false); }
+        if (!entry.EnoughGold) { Failed(entry, PurchaseStatus.FailureGold); return Task.FromResult(false); }
+
+        if (entry is MerchantCardRemovalEntry)
+        {
+            _ = ChooseRemoval();
+            return Task.FromResult(false);
+        }
+
+        _busyUntil = SourceTracker.Now() + 5;
+        var view = _state.Items.FirstOrDefault(i => i.Index == index);
+        UpdateHeader(view is null ? "" : $"Buying {view.Title}…");
+        _actions.Buy(index);
+        return Task.FromResult(false);
+    }
+
+    /// <summary>The removal slot: pick the card from the owner's deck on the game's own deck screen.</summary>
+    private async Task ChooseRemoval()
+    {
+        var deck = _owner.Deck?.Cards.ToList() ?? new List<CardModel>();
+        if (deck.Count == 0) return;
+
+        NDeckCardSelectScreen screen;
+        try
+        {
+            var prefs = new CardSelectorPrefs(CardSelectorPrefs.RemoveSelectionPrompt, 1) { Cancelable = true };
+            screen = NDeckCardSelectScreen.Create(deck, prefs);
+            NOverlayStack.Instance!.Push(screen);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Opening the removal screen failed", ex);
+            return;
+        }
+        _removalScreen = screen;
+        _actions.PickerScreenOpened(screen);
+
+        CardModel? picked = null;
+        try { picked = (await screen.CardsSelected())?.FirstOrDefault(); }
+        catch (Exception ex) { Log.Error("Removal screen failed", ex); }
+        _removalScreen = null;
+        if (Nodes.Alive(screen) && NOverlayStack.Instance?.Peek() == screen) NativeScreens.Close(screen);
+        if (picked is null || _closing) return;
+
+        int deckIndex = DeckIndex(deck, picked);
+        if (deckIndex < 0)
+        {
+            Log.Warn($"Couldn't find {picked.Title} in {_ownerName}'s deck list");
+            UpdateHeader("Couldn't match that card. Try again.");
+            return;
+        }
+        _busyUntil = SourceTracker.Now() + 5;
+        UpdateHeader($"Removing {picked.Title}…");
+        _actions.Remove(deckIndex);
+    }
+
+    /// <summary>The card's position in the deck list the owner sent, checked against the card itself.</summary>
+    private int DeckIndex(List<CardModel> deck, CardModel picked)
+    {
+        var view = GameQuery.View(picked);
+        int local = deck.IndexOf(picked);
+        if (local >= 0 && local < _state.Deck.Count && Matches(_state.Deck[local], view)) return local;
+        for (int i = 0; i < _state.Deck.Count; i++)
+            if (Matches(_state.Deck[i], view)) return i;
+        return -1;
+    }
+
+    private static bool Matches(CardView a, CardView b) => a.Id == b.Id && a.Upgrades == b.Upgrades && a.Title == b.Title;
+
+    private void OnInventoryClosed()
+    {
+        if (_closing) return;
+        Log.Info($"Closed {_ownerName}'s shop: done shopping");
+        Close();
+        _actions.Done();
+    }
+
+    private void UpdateHeader(string notice = "")
+    {
+        string text = $"Shopping for {_ownerName} · {_owner.Gold} gold (theirs)";
+        if (!string.IsNullOrEmpty(notice)) text += $"\n{notice}";
+        _header.Text = text;
+    }
+
+    // ------------------------------------------------------------------ building the copy
+
+    private static (MerchantInventory?, Dictionary<int, MerchantEntry>) Build(ShopStateMsg s, Player owner)
+    {
+        var slots = new Dictionary<int, MerchantEntry>();
+        try
+        {
+            var inventory = new MerchantInventory(owner);
+            var characterCards = Get<List<MerchantCardEntry>>(inventory, "_characterCardEntries");
+            var colorlessCards = Get<List<MerchantCardEntry>>(inventory, "_colorlessCardEntries");
+            var relics = Get<List<MerchantRelicEntry>>(inventory, "_relicEntries");
+            var potions = Get<List<MerchantPotionEntry>>(inventory, "_potionEntries");
+
+            foreach (var item in s.Items.OrderBy(i => i.Index))
+            {
+                MerchantEntry entry;
+                switch (item.Type)
+                {
+                    case ShopItemType.Card:
+                    case ShopItemType.ColorlessCard:
+                        var card = Blank<MerchantCardEntry>(owner);
+                        Set(card, typeof(MerchantCardEntry), "_inventory", inventory);
+                        (item.Type == ShopItemType.Card ? characterCards : colorlessCards).Add(card);
+                        entry = card;
+                        break;
+                    case ShopItemType.Relic:
+                        var relic = Blank<MerchantRelicEntry>(owner);
+                        relics.Add(relic);
+                        entry = relic;
+                        break;
+                    case ShopItemType.Potion:
+                        var potion = Blank<MerchantPotionEntry>(owner);
+                        potions.Add(potion);
+                        entry = potion;
+                        break;
+                    case ShopItemType.CardRemoval:
+                        var removal = new MerchantCardRemovalEntry(owner);
+                        Set(inventory, typeof(MerchantInventory), "<CardRemovalEntry>k__BackingField", removal);
+                        entry = removal;
+                        break;
+                    default:
+                        continue;
+                }
+                if (!Fill(entry, item, owner)) return (null, slots);
+                slots[item.Index] = entry;
+            }
+            return (inventory, slots);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Building the copy of the shop failed", ex);
+            return (null, slots);
+        }
+    }
+
+    /// <summary>
+    /// An entry with no constructor run: the real constructors roll prices and stock from the owner's
+    /// shop RNG, which must never move on the picker's client.
+    /// </summary>
+    private static T Blank<T>(Player owner) where T : MerchantEntry
+    {
+        var entry = (T)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(T));
+        Set(entry, typeof(MerchantEntry), "_player", owner);
+        return entry;
+    }
+
+    /// <summary>Puts the slot's item (or nothing, when sold out) and price into the entry.</summary>
+    private static bool Fill(MerchantEntry entry, ShopItemView item, Player owner)
+    {
+        Set(entry, typeof(MerchantEntry), "_cost", item.BaseCost);
+        switch (entry)
+        {
+            case MerchantCardEntry card:
+            {
+                CardCreationResult? result = null;
+                if (item.Stocked)
+                {
+                    var current = card.CreationResult?.Card;
+                    if (current is not null && GameQuery.View(current).Id == item.Id && GameQuery.View(current).Title == item.Title)
+                        result = card.CreationResult;
+                    else
+                    {
+                        var model = CardCodec.Rebuild(item.Blob, owner);
+                        if (model is null) return false;
+                        result = new CardCreationResult(model);
+                    }
+                }
+                Set(card, typeof(MerchantCardEntry), "<CreationResult>k__BackingField", result);
+                Set(card, typeof(MerchantCardEntry), "<IsOnSale>k__BackingField", item.Stocked && item.OnSale);
+                return true;
+            }
+            case MerchantRelicEntry relic:
+            {
+                RelicModel? model = null;
+                if (item.Stocked)
+                {
+                    model = relic.Model is { } cur && cur.GetType().FullName == item.Id ? cur : Model<RelicModel>(item.Id);
+                    if (model is null) return false;
+                }
+                Set(relic, typeof(MerchantRelicEntry), "<Model>k__BackingField", model);
+                return true;
+            }
+            case MerchantPotionEntry potion:
+            {
+                PotionModel? model = null;
+                if (item.Stocked)
+                {
+                    model = potion.Model is { } cur && cur.GetType().FullName == item.Id ? cur : Model<PotionModel>(item.Id);
+                    if (model is null) return false;
+                }
+                Set(potion, typeof(MerchantPotionEntry), "<Model>k__BackingField", model);
+                return true;
+            }
+            case MerchantCardRemovalEntry removal:
+                Set(removal, typeof(MerchantCardRemovalEntry), "<Used>k__BackingField", !item.Stocked);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static T? Model<T>(string typeName) where T : AbstractModel
+    {
+        var type = typeof(T).Assembly.GetType(typeName);
+        if (type is null)
+        {
+            Log.Warn($"Unknown shop item {typeName}");
+            return null;
+        }
+        return ModelDb.GetByIdOrNull<T>(ModelDb.GetId(type))?.MutableClone() as T;
+    }
+
+    // ------------------------------------------------------------------ reflection helpers
+
+    private const BindingFlags Any = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+    private static T Get<T>(object target, string field) =>
+        (T)(target.GetType().GetField(field, Any) ?? throw new MissingFieldException(target.GetType().Name, field)).GetValue(target)!;
+
+    private static void Set(object target, Type declaring, string field, object? value) =>
+        (declaring.GetField(field, Any) ?? throw new MissingFieldException(declaring.Name, field)).SetValue(target, value);
+
+    private static void EntryUpdated(MerchantEntry entry)
+    {
+        try { (typeof(MerchantEntry).GetField("EntryUpdated", Any)?.GetValue(entry) as Action)?.Invoke(); }
+        catch (Exception ex) { Log.Warn($"Refreshing a shop slot failed: {ex.Message}"); }
+    }
+
+    private static void Failed(MerchantEntry entry, PurchaseStatus status)
+    {
+        try { AccessTools.Method(typeof(MerchantEntry), "InvokePurchaseFailed")?.Invoke(entry, new object[] { status }); }
+        catch (Exception ex) { Log.Warn($"Couldn't show the purchase failure: {ex.Message}"); }
+    }
+
+    private static void Call(object target, string method)
+    {
+        try { AccessTools.Method(target.GetType(), method)?.Invoke(target, null); }
+        catch (Exception ex) { Log.Warn($"{method} failed: {ex.Message}"); }
+    }
+}
+
+/// <summary>Clicks on the copy of a shop never reach the real purchase code.</summary>
+[HarmonyPatch(typeof(MerchantEntry), nameof(MerchantEntry.OnTryPurchaseWrapper))]
+internal static class MimicPurchasePatch
+{
+    private static bool Prefix(MerchantEntry __instance, MerchantInventory __0, ref Task<bool> __result)
+    {
+        if (MimicShop.Current is not { } shop || !ReferenceEquals(__0, shop.Inventory)) return true;
+        __result = shop.OnClick(__instance);
+        return false;
+    }
+}
+
+[HarmonyPatch(typeof(MerchantCardRemovalEntry), nameof(MerchantCardRemovalEntry.OnTryPurchaseWrapper),
+    new[] { typeof(MerchantInventory), typeof(bool), typeof(bool) })]
+internal static class MimicRemovalPatch
+{
+    private static bool Prefix(MerchantCardRemovalEntry __instance, MerchantInventory __0, ref Task<bool> __result)
+    {
+        if (MimicShop.Current is not { } shop || !ReferenceEquals(__0, shop.Inventory)) return true;
+        __result = shop.OnClick(__instance);
+        return false;
+    }
+}
+
+/// <summary>
+/// While the copy is open it is the screen in front, so its back button and controller navigation work
+/// (the game disables a merchant rug's back button when it isn't the active screen).
+/// </summary>
+[HarmonyPatch(typeof(ActiveScreenContext), nameof(ActiveScreenContext.GetCurrentScreen))]
+internal static class MimicActiveScreenPatch
+{
+    private static void Postfix(ref IScreenContext __result)
+    {
+        if (MimicShop.Current is not { } shop || !Nodes.Alive(shop.Node)) return;
+        var room = NMerchantRoom.Instance;
+        if (room is null) return;
+        if (ReferenceEquals(__result, room) || ReferenceEquals(__result, room.Inventory))
+            __result = shop.Node;
+    }
+}

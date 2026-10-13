@@ -250,8 +250,8 @@ internal partial class PickerPanel : CanvasLayer
         _subtitle.Text = $"{s.Gold} gold to spend (theirs)";
         _notice.Text = s.Notice;
 
-        var removal = s.Items.FirstOrDefault(i => i.Type == ShopItemType.CardRemoval);
-        foreach (var item in s.Items.Where(i => i.Type != ShopItemType.CardRemoval))
+        var removal = s.Items.FirstOrDefault(i => i.Type == ShopItemType.CardRemoval && i.Stocked);
+        foreach (var item in s.Items.Where(i => i.Type != ShopItemType.CardRemoval && i.Stocked))
         {
             var it = item;
             string tag = it.Type switch

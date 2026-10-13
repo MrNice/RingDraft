@@ -50,7 +50,7 @@ dotnet run --project tests\CoreTests
 
 Authority never moves. When your card reward screen opens, your client covers it with a "Alex is picking your card reward…" panel and sends the options to your picker over the game's own co-op channel. The picker sees the game's own card reward, choose-a-card, or Smith screen, filled with exact copies of your cards (upgrades and enchantments included) and titled "Choose for <you>". Out of combat it opens automatically; in combat it waits for the picker to press **Show the cards**, so a teammate's potion never interrupts their turn. A side panel also lists the options as text, with your gold, relics, and deck, as a fallback. Their click comes back as a message; your client validates it (right request, right sender, in range) and then presses the card on your own screen. To the game it looks like you clicked, so vanilla sync, RNG, and saves are untouched.
 
-The shop works the same way, but it stays open for repeated actions. Each purchase runs through your merchant entry on your client, and a fresh shop state goes back to the picker. **Done shopping** returns control to you.
+The shop works the same way, but it stays open for repeated actions. The picker gets your shop on the game's own merchant rug, laid over theirs, with your cards, relics, potions, prices and gold. Clicking an item sends the request to you; your client makes the real purchase through your merchant entry and sends back the new shop state, so sold items vanish and prices follow your gold. The card-removal slot opens your deck on the game's deck screen for the picker to choose from. Closing the rug (or **Done shopping** in the side list) returns control to you. Nothing on the picker's copy can buy anything on their side.
 
 If a picker stalls (90s, or 30s in combat), you get a "Choose myself" button. Nothing is ever chosen automatically.
 
@@ -96,6 +96,7 @@ Every game type, member, signal and Harmony target the mod uses was checked agai
 | Opening everyone's card reward | `NRewardButton` on `NRewardsScreen` |
 | Shop removal | any `NCardGridSelectionScreen` opened by a removal the picker bought |
 | Shop | `NMerchantRoom.Instance.Inventory` while `IsOpen` |
+| Picker's copy of the shop | a second `merchant/merchant_inventory` scene; Harmony prefixes on `MerchantEntry.OnTryPurchaseWrapper` and `MerchantCardRemovalEntry.OnTryPurchaseWrapper` turn its clicks into requests |
 
 Potion use and card plays are timed through Harmony prefixes on `PotionModel.OnUseWrapper` and `CardModel.OnPlayWrapper`.
 
