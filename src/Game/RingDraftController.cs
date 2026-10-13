@@ -214,14 +214,14 @@ internal partial class RingDraftController : Node
         _ledger.Prune();
         if (pickerScreenOnTop) return;
 
-        var kindOfScreen = GameQuery.Classify(GameQuery.TopOverlay(), out var screen, out bool isUpgradeGrid);
+        var kindOfScreen = GameQuery.Classify(GameQuery.TopOverlay(), out var screen, out bool isUpgradeGrid, out var gridKind);
         if (screen is null) return;
         ulong id = screen.GetInstanceId();
         if (_handled.Contains(id)) return;
 
         // The upgrade grid only opens after the owner picks Smith at a rest site.
         string? restOption = isUpgradeGrid ? "SMITH" : null;
-        var ctx = new ScreenContext(kindOfScreen, GameQuery.Room(), restOption, SourceTracker.Infer(now), _pendingRemoval is not null);
+        var ctx = new ScreenContext(kindOfScreen, GameQuery.Room(), restOption, SourceTracker.Infer(now), _pendingRemoval is not null, gridKind);
         var kind = DelegationRules.Classify(ctx, Config.Rules);
 
         if (kind == DecisionKind.ShopRemovalPick) return; // resolved by the block at the top once the grid is ready
@@ -267,14 +267,22 @@ internal partial class RingDraftController : Node
             Log.Warn($"{kind} screen had no readable cards; leaving it to you");
             return;
         }
-        bool canSkip = kind != DecisionKind.Bundle && UiDriver.HasSkip(screen);
-        var decision = _ledger!.Open(kind, picker, choices, canSkip, now, timeout);
+        bool deckChoice = DelegationRules.IsDeckChoice(kind);
+        var (min, max) = deckChoice ? UiDriver.Limits(screen) : (1, 1);
+        max = Math.Min(max, choices);
+        min = Math.Min(min, max);
+        bool canSkip = kind != DecisionKind.Bundle && !deckChoice && UiDriver.HasSkip(screen);
+        var decision = _ledger!.Open(kind, picker, choices, canSkip, now, timeout, min, max);
 
         _net.Send(new OfferMsg(decision.RequestId, _me, picker, kind, options, canSkip,
-            GameQuery.MyDeckViews(), GameQuery.MyGold(), GameQuery.MyRelics(), timeout) { Groups = groups });
+            GameQuery.MyDeckViews(), GameQuery.MyGold(), GameQuery.MyRelics(), timeout) { Groups = groups, MinSelect = min, MaxSelect = max });
 
+        string cards = max > 1 ? $"which {max} cards" : "which card";
         string waiting = kind switch
         {
+            DecisionKind.DeckRemove => $"{who} is choosing {cards} you remove…",
+            DecisionKind.DeckTransform => $"{who} is choosing {cards} you transform…",
+            DecisionKind.DeckUpgrade => $"{who} is choosing {cards} you upgrade…",
             DecisionKind.Bundle => $"{who} is choosing your pack…",
             DecisionKind.SmithUpgrade => $"{who} is choosing which card you upgrade…",
             DecisionKind.GeneratedCardChoice => $"{who} is choosing your card…",
@@ -325,15 +333,15 @@ internal partial class RingDraftController : Node
 
         bool ok = a.Kind == DecisionKind.Bundle ? UiDriver.PressBundle(a.Screen, p.OptionIndex)
                 : p.OptionIndex == -1 ? UiDriver.PressSkip(a.Screen)
-                : UiDriver.PressHolder(a.Screen, p.OptionIndex);
+                : p.Chosen.All(i => UiDriver.PressHolder(a.Screen, i));
         if (ok && a.Kind != DecisionKind.Bundle) WarnIfStillOpen(a.Screen, a.Kind);
         if (!ok)
         {
             Log.Warn($"Couldn't apply pick #{p.RequestId} (option {p.OptionIndex}); the screen is yours");
             return;
         }
-        if (a.Kind is DecisionKind.SmithUpgrade or DecisionKind.Bundle) ConfirmWhenEnabled(a.Screen);
-        Log.Info($"Applied {_net.NameOf(sender)}'s {a.Kind} pick: option {p.OptionIndex}");
+        if (a.Kind is DecisionKind.SmithUpgrade or DecisionKind.Bundle || DelegationRules.IsDeckChoice(a.Kind)) ConfirmWhenEnabled(a.Screen);
+        Log.Info($"Applied {_net.NameOf(sender)}'s {a.Kind} pick: {string.Join(", ", p.Chosen)}");
     }
 
     private void OnShopAction(ShopActionMsg msg, ulong sender, double now)
@@ -453,7 +461,7 @@ internal partial class RingDraftController : Node
         {
             case OfferMsg o:
                 _panel.ShowOffer(o, owner,
-                    index => SendPick(o, index),
+                    chosen => SendPick(o, chosen),
                     NativeScreens.Supports(o) ? () => OpenNative(o) : null);
                 break;
 
@@ -564,7 +572,7 @@ internal partial class RingDraftController : Node
 
     private async Task AwaitNative(OfferMsg o, NativeScreens.Open open)
     {
-        int? index;
+        int[]? index;
         try { index = await open.Result; }
         catch (Exception ex) { Log.Error($"Game screen for #{o.RequestId} failed", ex); index = null; }
 
@@ -577,7 +585,7 @@ internal partial class RingDraftController : Node
             Log.Info($"Closed the {o.Kind} screen for #{o.RequestId} without choosing; the list is still there");
             return;
         }
-        SendPick(o, index.Value);
+        SendPick(o, index);
     }
 
     private void CloseNative()
@@ -588,17 +596,21 @@ internal partial class RingDraftController : Node
         _panel?.SetSuppressed(false);
     }
 
-    private void SendPick(OfferMsg o, int index)
+    /// <param name="chosen">One option index (or -1 to skip), or several for a multi-card deck choice.</param>
+    private void SendPick(OfferMsg o, int[] chosen)
     {
         if (_inbox is null || !_inbox.Has(o.From, o.RequestId))
         {
             Log.Info($"Pick for #{o.RequestId} dropped: the offer was already withdrawn");
             return;
         }
-        _net.Send(new PickMsg(o.RequestId, _me, o.From, index));
+        if (chosen.Length == 0) return;
+        var pick = new PickMsg(o.RequestId, _me, o.From, chosen[0]);
+        if (chosen.Length > 1) pick = pick with { Indices = chosen };
+        _net.Send(pick);
         _inbox?.Complete(o.From, o.RequestId);
         if (_native is { } open && ReferenceEquals(open.Offer, o)) CloseNative();
-        Log.Info($"Picked option {index} for {_net.NameOf(o.From)} (#{o.RequestId})");
+        Log.Info($"Picked {string.Join(", ", chosen)} for {_net.NameOf(o.From)} (#{o.RequestId})");
     }
 
     // ---------------------------------------------------------------- small scheduler

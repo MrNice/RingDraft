@@ -23,10 +23,12 @@ namespace RingDraft;
 internal static class NativeScreens
 {
     /// <summary>A screen the picker has open, and the option index it resolves to (-1 skip, null closed without choosing).</summary>
-    public sealed record Open(Node Screen, Task<int?> Result);
+    /// <summary>A screen the picker has open, and the option indices it resolves to ([-1] skip, null closed without choosing).</summary>
+    public sealed record Open(Node Screen, Task<int[]?> Result);
 
     public static bool Supports(OfferMsg o) =>
-        o.Kind is DecisionKind.CardReward or DecisionKind.GeneratedCardChoice or DecisionKind.SmithUpgrade or DecisionKind.Bundle
+        (o.Kind is DecisionKind.CardReward or DecisionKind.GeneratedCardChoice or DecisionKind.SmithUpgrade or DecisionKind.Bundle
+            || DelegationRules.IsDeckChoice(o.Kind))
         && o.Options.Count > 0
         && (o.Kind != DecisionKind.Bundle || o.Packs().Count == o.Groups.Count && o.Groups.Count > 0)
         && o.Options.All(c => !string.IsNullOrEmpty(c.Blob));
@@ -35,14 +37,14 @@ internal static class NativeScreens
     {
         var owner = GameQuery.PlayerById(o.From);
         List<CardModel>? cards;
-        if (o.Kind == DecisionKind.SmithUpgrade)
+        if (o.Kind == DecisionKind.SmithUpgrade || DelegationRules.IsDeckChoice(o.Kind))
         {
             // The upgrade preview reads the card's pile and run scope, which only real deck cards have.
             // Every client holds every player's deck, so show the owner's own cards.
             cards = DeckCards(o.Options, owner);
             if (cards is null)
             {
-                Log.Warn("Couldn't match the Smith options to the owner's deck; using the list instead");
+                Log.Warn($"Couldn't match the {o.Kind} options to the owner's deck; using the list instead");
                 return null;
             }
         }
@@ -69,7 +71,7 @@ internal static class NativeScreens
                 if (screen is null) return null;
                 var result = RewardResult(screen, cards.Count); // must start before any card can be clicked
                 Retitle(screen, $"Choose for {ownerName}");
-                return new Open(screen, result);
+                return new Open(screen, One(result));
             }
 
             case DecisionKind.GeneratedCardChoice:
@@ -78,7 +80,7 @@ internal static class NativeScreens
                 if (screen is null) return null;
                 var result = CardsResult(screen.CardsSelected(), cards, o.CanSkip);
                 Retitle(screen, $"Choose for {ownerName}");
-                return new Open(screen, result);
+                return new Open(screen, One(result));
             }
 
             case DecisionKind.Bundle:
@@ -94,7 +96,7 @@ internal static class NativeScreens
                 if (screen is null) return null;
                 var result = BundleResult(screen, screen.CardsSelected(), packs);
                 Retitle(screen, $"Choose a pack for {ownerName}");
-                return new Open(screen, result);
+                return new Open(screen, One(result));
             }
 
             case DecisionKind.SmithUpgrade:
@@ -104,7 +106,40 @@ internal static class NativeScreens
                 var prefs = new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, 1);
                 var screen = NDeckUpgradeSelectScreen.ShowScreen(cards, prefs, runState);
                 if (screen is null) return null;
-                return new Open(screen, CardsResult(screen.CardsSelected(), cards, canSkip: false));
+                Tag(screen, $"{ownerName}'s deck: upgrade 1 card");
+                return new Open(screen, One(CardsResult(screen.CardsSelected(), cards, canSkip: false)));
+            }
+
+            // Gifts that remove, transform or upgrade cards (Neow's Precise Scissors / Precarious Shears, New Leaf, Pomander).
+            case DecisionKind.DeckRemove:
+            {
+                var prefs = new CardSelectorPrefs(CardSelectorPrefs.RemoveSelectionPrompt, o.MinSelect, o.MaxSelect);
+                var screen = NDeckCardSelectScreen.Create(cards, prefs);
+                if (screen is null || NOverlayStack.Instance is not { } stack) return null;
+                stack.Push(screen);
+                Tag(screen, $"{ownerName}'s deck: remove {Count(o)}");
+                return new Open(screen, Many(screen.CardsSelected(), cards));
+            }
+
+            case DecisionKind.DeckTransform:
+            {
+                var prefs = new CardSelectorPrefs(CardSelectorPrefs.TransformSelectionPrompt, o.MinSelect, o.MaxSelect);
+                // The game's default: "a random card". Its preview never rolls the RNG.
+                var screen = NDeckTransformSelectScreen.ShowScreen(cards, c => new CardTransformation(c), prefs);
+                if (screen is null) return null;
+                Tag(screen, $"{ownerName}'s deck: transform {Count(o)}");
+                return new Open(screen, Many(screen.CardsSelected(), cards));
+            }
+
+            case DecisionKind.DeckUpgrade:
+            {
+                var runState = RunManager.Instance?.DebugOnlyGetState();
+                if (runState is null) return null;
+                var prefs = new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, o.MinSelect, o.MaxSelect);
+                var screen = NDeckUpgradeSelectScreen.ShowScreen(cards, prefs, runState);
+                if (screen is null) return null;
+                Tag(screen, $"{ownerName}'s deck: upgrade {Count(o)}");
+                return new Open(screen, Many(screen.CardsSelected(), cards));
             }
 
             default:
@@ -147,6 +182,17 @@ internal static class NativeScreens
         catch (Exception ex) { Log.Error("Closing picker screen failed", ex); }
     }
 
+    private static async Task<int[]?> One(Task<int?> result) => await result is { } i ? new[] { i } : null;
+
+    /// <summary>Every selected card's position among the offered cards; null if closed without choosing.</summary>
+    private static async Task<int[]?> Many(Task<IEnumerable<CardModel>> selected, List<CardModel> offered)
+    {
+        var picked = (await selected)?.ToList() ?? new List<CardModel>();
+        if (picked.Count == 0) return null;
+        var indices = picked.Select(c => offered.FindIndex(o => ReferenceEquals(o, c))).ToArray();
+        return indices.All(i => i >= 0) && indices.Distinct().Count() == indices.Length ? indices : null;
+    }
+
     private static async Task<int?> RewardResult(NCardRewardSelectionScreen screen, int cardCount)
     {
         int? chosen = await screen.OptionSelected();
@@ -174,6 +220,23 @@ internal static class NativeScreens
         int index = offered.FindIndex(c => ReferenceEquals(c, card));
         if (index < 0) index = offered.FindIndex(c => c.Id.Equals(card.Id) && c.CurrentUpgradeLevel == card.CurrentUpgradeLevel);
         return index >= 0 ? index : null;
+    }
+
+    private static string Count(OfferMsg o) => o.MaxSelect > 1 ? $"{o.MaxSelect} cards" : "1 card";
+
+    /// <summary>Deck grids have no banner to retitle, so say whose deck it is in a line across the top.</summary>
+    private static void Tag(Node screen, string text)
+    {
+        try
+        {
+            var label = Style.Label(text, 26, Style.Accent);
+            label.HorizontalAlignment = HorizontalAlignment.Center;
+            label.MouseFilter = Control.MouseFilterEnum.Ignore;
+            label.AnchorLeft = 0; label.AnchorRight = 1; label.OffsetTop = 24; label.OffsetBottom = 64;
+            label.ZIndex = 10;
+            screen.AddChild(label);
+        }
+        catch (Exception ex) { Log.Warn($"Couldn't label picker screen: {ex.Message}"); }
     }
 
     /// <summary>"Choose a Card" becomes "Choose for Alex", so it's obvious whose card this is.</summary>

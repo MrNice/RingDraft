@@ -21,6 +21,8 @@ public sealed class PendingDecision
     public required double Deadline { get; init; }
     public int OptionCount { get; set; }
     public bool CanSkip { get; set; }
+    public int MinSelect { get; set; } = 1;
+    public int MaxSelect { get; set; } = 1;
     public DecisionState State { get; set; } = DecisionState.Waiting;
     /// <summary>Set once the deadline passes. The picker can still answer until the owner actually takes over.</summary>
     public bool Overdue { get; set; }
@@ -44,7 +46,8 @@ public sealed class OwnerLedger
 
     public IEnumerable<PendingDecision> Waiting => _open.Values.Where(d => d.State == DecisionState.Waiting);
 
-    public PendingDecision Open(DecisionKind kind, ulong picker, int optionCount, bool canSkip, double now, double timeoutSeconds)
+    public PendingDecision Open(DecisionKind kind, ulong picker, int optionCount, bool canSkip, double now, double timeoutSeconds,
+        int minSelect = 1, int maxSelect = 1)
     {
         var d = new PendingDecision
         {
@@ -54,6 +57,8 @@ public sealed class OwnerLedger
             Deadline = now + timeoutSeconds,
             OptionCount = optionCount,
             CanSkip = canSkip,
+            MinSelect = Math.Max(0, Math.Min(minSelect, maxSelect)),
+            MaxSelect = Math.Max(1, maxSelect),
         };
         if (_next == 0) _next = 1;
         _open[d.RequestId] = d;
@@ -68,6 +73,16 @@ public sealed class OwnerLedger
         var v = Check(msg, netSender, out var d);
         if (v != Verdict.Accepted) return v;
         if (d!.Kind is DecisionKind.Shop or DecisionKind.ShopRemovalPick) return Verdict.WrongKind;
+
+        if (msg.Indices.Count > 0 || d.MaxSelect > 1)
+        {
+            var chosen = msg.Chosen;
+            if (chosen.Count < Math.Max(1, d.MinSelect) || chosen.Count > d.MaxSelect) return Verdict.OutOfRange;
+            if (chosen[0] != msg.OptionIndex || chosen.Distinct().Count() != chosen.Count) return Verdict.OutOfRange;
+            if (chosen.Any(i => i < 0 || i >= d.OptionCount)) return Verdict.OutOfRange;
+            d.State = DecisionState.Resolved;
+            return Verdict.Accepted;
+        }
 
         bool skip = msg.OptionIndex == -1;
         if (skip ? !d.CanSkip : msg.OptionIndex < 0 || msg.OptionIndex >= d.OptionCount)

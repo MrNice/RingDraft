@@ -1,4 +1,5 @@
 using Godot;
+using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Merchant;
@@ -68,10 +69,15 @@ internal static class GameQuery
     /// What's on top. <paramref name="isUpgradeGrid"/> marks the Smith screen
     /// (NDeckUpgradeSelectScreen), which only opens after the owner chose Smith.
     /// </summary>
-    public static ScreenKind Classify(Node? overlay, out Node? screen, out bool isUpgradeGrid)
+    public static ScreenKind Classify(Node? overlay, out Node? screen, out bool isUpgradeGrid) =>
+        Classify(overlay, out screen, out isUpgradeGrid, out _);
+
+    /// <param name="grid">For deck grids: what choosing cards on it does (upgrade, remove, transform), when that can be told.</param>
+    public static ScreenKind Classify(Node? overlay, out Node? screen, out bool isUpgradeGrid, out DeckGridKind grid)
     {
         screen = overlay;
         isUpgradeGrid = false;
+        grid = DeckGridKind.Other;
         switch (overlay)
         {
             case NCardRewardSelectionScreen:
@@ -82,6 +88,13 @@ internal static class GameQuery
                 return ScreenKind.Bundle;
             case NDeckUpgradeSelectScreen:
                 isUpgradeGrid = true;
+                grid = DeckGridKind.Upgrade;
+                return ScreenKind.DeckGrid;
+            case NDeckTransformSelectScreen:           // New Leaf and other transform gifts
+                grid = DeckGridKind.Transform;
+                return ScreenKind.DeckGrid;
+            case NDeckCardSelectScreen deckSelect:     // generic deck pick: removal when its prompt is the removal prompt
+                grid = UiDriver.IsRemovalPrompt(deckSelect) ? DeckGridKind.Remove : DeckGridKind.Other;
                 return ScreenKind.DeckGrid;
             case NCardGridSelectionScreen:             // removal, transform, enchant, combat-pile picks
                 return ScreenKind.DeckGrid;
@@ -260,6 +273,40 @@ internal static class UiDriver
     }
 
     public static bool HasSkip(Node screen) => SkipButton(screen) is not null;
+
+    /// <summary>The selection rules a deck grid was opened with (its private _prefs), if it has them.</summary>
+    public static CardSelectorPrefs? Prefs(Node screen)
+    {
+        for (var t = screen.GetType(); t is not null; t = t.BaseType)
+        {
+            var f = t.GetField("_prefs", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (f?.GetValue(screen) is CardSelectorPrefs prefs) return prefs;
+        }
+        return null;
+    }
+
+    /// <summary>How many cards the grid wants: Precarious Shears takes 2, most gifts 1.</summary>
+    public static (int Min, int Max) Limits(Node screen)
+    {
+        try
+        {
+            if (Prefs(screen) is { } p) return (Math.Max(0, p.MinSelect), Math.Max(1, p.MaxSelect));
+        }
+        catch { /* fall through */ }
+        return (1, 1);
+    }
+
+    /// <summary>The generic deck screen is also used for duplicating and other picks; only its removal prompt is a removal.</summary>
+    public static bool IsRemovalPrompt(Node screen)
+    {
+        try
+        {
+            if (Prefs(screen) is not { } p) return false;
+            var removal = CardSelectorPrefs.RemoveSelectionPrompt;
+            return p.Prompt is { } prompt && prompt.LocTable == removal.LocTable && prompt.LocEntryKey == removal.LocEntryKey;
+        }
+        catch { return false; }
+    }
 
     /// <summary>The packs on a choose-a-pack screen, in on-screen order.</summary>
     public static List<NCardBundle> Bundles(Node screen) =>

@@ -43,6 +43,12 @@ public sealed record OfferMsg(
     /// </summary>
     public IReadOnlyList<int> Groups { get; init; } = Array.Empty<int>();
 
+    /// <summary>
+    /// How many options the picker must choose (deck choices like Precarious Shears take 2). Both 1 for everything else.
+    /// </summary>
+    public int MinSelect { get; init; } = 1;
+    public int MaxSelect { get; init; } = 1;
+
     /// <summary>Options split into packs according to Groups.</summary>
     public List<List<CardView>> Packs()
     {
@@ -62,7 +68,14 @@ public sealed record OfferMsg(
 }
 
 /// <summary>Picker → owner: option index, or -1 to skip.</summary>
-public sealed record PickMsg(uint RequestId, ulong From, ulong To, int OptionIndex) : Envelope(RequestId, From, To);
+public sealed record PickMsg(uint RequestId, ulong From, ulong To, int OptionIndex) : Envelope(RequestId, From, To)
+{
+    /// <summary>Every chosen option when more than one is picked (OptionIndex is then the first). Empty for single picks.</summary>
+    public IReadOnlyList<int> Indices { get; init; } = Array.Empty<int>();
+
+    /// <summary>The chosen options, however many.</summary>
+    public IReadOnlyList<int> Chosen => Indices.Count > 0 ? Indices : new[] { OptionIndex };
+}
 
 /// <summary>Owner → picker: current shop contents. Re-sent after each purchase.</summary>
 public sealed record ShopStateMsg(
@@ -126,10 +139,13 @@ public static class Codec
                 w.Write(o.TimeoutSeconds);
                 Count(w, o.Groups.Count);
                 foreach (int g in o.Groups) w.Write(g);
+                w.Write(o.MinSelect); w.Write(o.MaxSelect);
                 break;
             case PickMsg p:
                 w.Write((byte)Tag.Pick); Head(w, p);
                 w.Write(p.OptionIndex);
+                Count(w, p.Indices.Count);
+                foreach (int i in p.Indices) w.Write(i);
                 break;
             case ShopStateMsg s:
                 w.Write((byte)Tag.ShopState); Head(w, s);
@@ -192,11 +208,20 @@ public static class Codec
                         groups.Add(size);
                     }
                     if (groups.Sum() > options.Count) return false;
-                    envelope = new OfferMsg(id, from, to, kind, options, canSkip, deck, gold, relics, timeout) { Groups = groups };
+                    int min = r.ReadInt32(), max = r.ReadInt32();
+                    if (min < 0 || max < 1 || min > max || max > MaxList) return false;
+                    envelope = new OfferMsg(id, from, to, kind, options, canSkip, deck, gold, relics, timeout)
+                        { Groups = groups, MinSelect = min, MaxSelect = max };
                     break;
                 }
                 case Tag.Pick:
-                    envelope = new PickMsg(id, from, to, r.ReadInt32());
+                {
+                    int option = r.ReadInt32();
+                    int n = ReadCount(r);
+                    var indices = new List<int>(n);
+                    for (int k = 0; k < n; k++) indices.Add(r.ReadInt32());
+                    envelope = new PickMsg(id, from, to, option) { Indices = indices };
+                }
                     break;
                 case Tag.ShopState:
                 {

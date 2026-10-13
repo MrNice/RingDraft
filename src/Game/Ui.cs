@@ -196,11 +196,16 @@ internal partial class PickerPanel : CanvasLayer
     }
 
     /// <param name="onShowCards">Opens the game's own screen with the real cards; null when that isn't possible.</param>
-    public void ShowOffer(OfferMsg o, string ownerName, Action<int> onPick, Action? onShowCards = null)
+    /// <param name="onPick">The chosen option indices: one (or -1 to skip), or several for a multi-card deck choice.</param>
+    public void ShowOffer(OfferMsg o, string ownerName, Action<int[]> onPick, Action? onShowCards = null)
     {
         Begin(o, o.TimeoutSeconds, ownerName);
+        string count = o.MaxSelect > 1 ? $"{o.MaxSelect} cards" : "a card";
         _title.Text = o.Kind switch
         {
+            DecisionKind.DeckRemove => $"Remove {count} from {ownerName}'s deck",
+            DecisionKind.DeckTransform => $"Transform {count} in {ownerName}'s deck",
+            DecisionKind.DeckUpgrade => $"Upgrade {count} for {ownerName}",
             DecisionKind.Bundle => $"Choose {ownerName}'s pack",
             DecisionKind.SmithUpgrade => $"Upgrade a card for {ownerName}",
             DecisionKind.GeneratedCardChoice => $"Choose {ownerName}'s card (mid-combat)",
@@ -224,8 +229,30 @@ internal partial class PickerPanel : CanvasLayer
                 int index = i;
                 var pack = packs[i];
                 _list.AddChild(Style.Button($"Pack {i + 1}: {string.Join(" · ", pack.Select(c => c.Title))}",
-                    () => onPick(index), string.Join("\n\n", pack.Select(c => $"{c.Title}: {c.Description}"))));
+                    () => onPick(new[] { index }), string.Join("\n\n", pack.Select(c => $"{c.Title}: {c.Description}"))));
             }
+        }
+        else if (o.MaxSelect > 1)
+        {
+            // Choose several, then confirm.
+            var chosen = new List<int>();
+            var confirm = Style.Button($"Confirm (0/{o.MaxSelect})", () => onPick(chosen.ToArray()), "", disabled: true);
+            for (int i = 0; i < o.Options.Count; i++)
+            {
+                int index = i;
+                var c = o.Options[i];
+                var button = Style.Button(c.Title, () => { }, c.Description);
+                button.ToggleMode = true;
+                button.Toggled += on =>
+                {
+                    if (on && chosen.Count >= o.MaxSelect) { button.SetPressedNoSignal(false); return; }
+                    if (on) chosen.Add(index); else chosen.Remove(index);
+                    confirm.Text = $"Confirm ({chosen.Count}/{o.MaxSelect})";
+                    confirm.Disabled = chosen.Count < Math.Max(1, o.MinSelect);
+                };
+                _list.AddChild(button);
+            }
+            _footer.AddChild(confirm);
         }
         else
         {
@@ -233,11 +260,11 @@ internal partial class PickerPanel : CanvasLayer
             {
                 int index = i;
                 var c = o.Options[i];
-                _list.AddChild(Style.Button(c.Title, () => onPick(index), c.Description));
+                _list.AddChild(Style.Button(c.Title, () => onPick(new[] { index }), c.Description));
             }
         }
         if (o.CanSkip)
-            _footer.AddChild(Style.Button("Skip", () => onPick(-1)));
+            _footer.AddChild(Style.Button("Skip", () => onPick(new[] { -1 })));
 
         SetDeck(o.Deck);
         Reveal();

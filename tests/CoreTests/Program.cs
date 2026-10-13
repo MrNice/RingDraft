@@ -40,8 +40,9 @@ const ulong A = 101, B = 202, C = 303, D = 404;
 // ---------- Rules ----------
 {
     var cfg = new RulesConfig();
-    DecisionKind? K(ScreenKind s, RoomKind r, string? rest = null, ChoiceSource src = ChoiceSource.Unknown, bool removal = false) =>
-        DelegationRules.Classify(new ScreenContext(s, r, rest, src, removal), cfg);
+    DecisionKind? K(ScreenKind s, RoomKind r, string? rest = null, ChoiceSource src = ChoiceSource.Unknown, bool removal = false,
+        DeckGridKind grid = DeckGridKind.Other) =>
+        DelegationRules.Classify(new ScreenContext(s, r, rest, src, removal, grid), cfg);
 
     Check(K(ScreenKind.CardReward, RoomKind.Combat) == DecisionKind.CardReward, "combat card reward delegated");
     Check(K(ScreenKind.CardReward, RoomKind.Other) == DecisionKind.CardReward, "post-combat card reward delegated");
@@ -59,7 +60,15 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Check(K(ScreenKind.Bundle, RoomKind.Ancient) == DecisionKind.Bundle, "Scroll Boxes packs at Neow delegated");
     Check(K(ScreenKind.Bundle, RoomKind.Merchant) == DecisionKind.Bundle, "Scroll Boxes bought at shop delegated");
     Check(K(ScreenKind.Bundle, RoomKind.Event) is null, "packs inside a regular event stay");
-    Check(K(ScreenKind.DeckGrid, RoomKind.Ancient) is null, "Neow remove/transform grids stay with owner");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Ancient) is null, "unknown deck grid at Neow stays with owner");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Ancient, grid: DeckGridKind.Remove) == DecisionKind.DeckRemove, "Neow's remove-a-card delegated");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Ancient, grid: DeckGridKind.Transform) == DecisionKind.DeckTransform, "Neow's transform delegated");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Ancient, grid: DeckGridKind.Upgrade) == DecisionKind.DeckUpgrade, "Pomander's upgrade delegated");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Treasure, grid: DeckGridKind.Remove) == DecisionKind.DeckRemove, "removal relic from a chest delegated");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Event, grid: DeckGridKind.Transform) is null, "event transform stays with owner");
+    Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "COOK", grid: DeckGridKind.Remove) is null, "rest-site removal stays with owner");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Merchant, grid: DeckGridKind.Remove) is null, "merchant removal grid only via the picker's purchase");
+    Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "SMITH", grid: DeckGridKind.Upgrade) == DecisionKind.SmithUpgrade, "smith keeps its own kind");
 
     Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "SMITH") == DecisionKind.SmithUpgrade, "smith grid delegated after owner picks smith");
     Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "smith_option") == DecisionKind.SmithUpgrade, "smith id match is case-insensitive substring");
@@ -75,7 +84,8 @@ const ulong A = 101, B = 202, C = 303, D = 404;
 
     cfg.DelegateAncientRewards = false;
     Check(K(ScreenKind.CardReward, RoomKind.Ancient) is null && K(ScreenKind.Bundle, RoomKind.Ancient) is null
-          && K(ScreenKind.GeneratedCardChoice, RoomKind.Ancient) is null, "Ancient toggle off keeps all Ancient gifts");
+          && K(ScreenKind.GeneratedCardChoice, RoomKind.Ancient) is null
+          && K(ScreenKind.DeckGrid, RoomKind.Ancient, grid: DeckGridKind.Remove) is null, "Ancient toggle off keeps all Ancient gifts");
     Check(K(ScreenKind.Bundle, RoomKind.Merchant) == DecisionKind.Bundle, "Ancient toggle doesn't affect shop relics");
     cfg.DelegateAncientRewards = true;
     cfg.DelegateCardEffectChoices = true;
@@ -143,6 +153,13 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     var bundle = new OfferMsg(11, A, B, DecisionKind.Bundle, deck.Concat(deck).Concat(deck).ToList(), false, deck, 50, new List<string>(), 90) { Groups = new[] { 2, 2, 2 } };
     Check(Codec.TryDecode(Codec.Encode(bundle), out var bb) && bb is OfferMsg ob && ob.Groups.SequenceEqual(new[] { 2, 2, 2 })
           && ob.ChoiceCount == 3 && ob.Packs().Count == 3 && ob.Packs()[2][1].Title == "Bash+", "bundle packs survive round trip");
+    var shears = new OfferMsg(12, A, B, DecisionKind.DeckRemove, deck, false, deck, 0, new List<string>(), 90) { MinSelect = 2, MaxSelect = 2 };
+    Check(Codec.TryDecode(Codec.Encode(shears), out var sb) && sb is OfferMsg os && os.MinSelect == 2 && os.MaxSelect == 2 && os.Kind == DecisionKind.DeckRemove,
+        "select counts survive round trip");
+    Check(!Codec.TryDecode(Codec.Encode(shears with { MinSelect = 3, MaxSelect = 2 }), out _), "min above max rejected");
+    var multi = new PickMsg(12, B, A, 1) { Indices = new[] { 1, 0 } };
+    Check(Codec.TryDecode(Codec.Encode(multi), out var mb) && mb is PickMsg pm && pm.Chosen.SequenceEqual(new[] { 1, 0 }), "multi-pick round trip");
+    Check(Codec.TryDecode(Codec.Encode(msgs[2]), out var sp) && ((PickMsg)sp!).Chosen.SequenceEqual(new[] { -1 }), "single pick reads as one choice");
     var badGroups = bundle with { Groups = new[] { 5, 5 } };
     Check(!Codec.TryDecode(Codec.Encode(badGroups), out _), "groups claiming more cards than sent are rejected");
     Check(((OfferMsg)msgs[0]).ChoiceCount == 2 && ((OfferMsg)msgs[0]).Groups.Count == 0, "non-bundle offers have no groups");
@@ -185,6 +202,18 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Check(ledger.TryResolve(new PickMsg(d.RequestId, A, B, -2), A) == Verdict.OutOfRange, "negative index rejected");
     Check(ledger.TryResolve(new PickMsg(d.RequestId, A, B, 2), A) == Verdict.Accepted, "valid pick accepted");
     Check(ledger.TryResolve(new PickMsg(d.RequestId, A, B, 1), A) == Verdict.AlreadyClosed, "duplicate pick rejected");
+
+    var cut = ledger.Open(DecisionKind.DeckRemove, A, optionCount: 10, canSkip: false, now: 0, timeoutSeconds: 90, minSelect: 2, maxSelect: 2);
+    PickMsg Cut(params int[] idx) => new(cut.RequestId, A, B, idx.Length > 0 ? idx[0] : 0) { Indices = idx };
+    Check(ledger.TryResolve(new PickMsg(cut.RequestId, A, B, 3), A) == Verdict.OutOfRange, "two-card removal needs two cards");
+    Check(ledger.TryResolve(Cut(3, 3), A) == Verdict.OutOfRange, "same card twice rejected");
+    Check(ledger.TryResolve(Cut(3, 10), A) == Verdict.OutOfRange, "second card out of range rejected");
+    Check(ledger.TryResolve(Cut(1, 2, 3), A) == Verdict.OutOfRange, "too many cards rejected");
+    Check(ledger.TryResolve(new PickMsg(cut.RequestId, A, B, 5) { Indices = new[] { 3, 4 } }, A) == Verdict.OutOfRange, "OptionIndex must match the first choice");
+    Check(ledger.TryResolve(Cut(3, 7), A) == Verdict.Accepted, "two distinct cards accepted");
+    var one = ledger.Open(DecisionKind.DeckTransform, A, 5, false, 0, 90);
+    Check(ledger.TryResolve(new PickMsg(one.RequestId, A, B, 0) { Indices = new[] { 0, 1 } }, A) == Verdict.OutOfRange, "extra picks on a single choice rejected");
+    Check(ledger.TryResolve(new PickMsg(one.RequestId, A, B, 4), A) == Verdict.Accepted, "single transform accepted");
 
     var smith = ledger.Open(DecisionKind.SmithUpgrade, A, optionCount: 10, canSkip: false, now: 0, timeoutSeconds: 90);
     Check(ledger.TryResolve(new PickMsg(smith.RequestId, A, B, -1), A) == Verdict.OutOfRange, "skip refused when not allowed");

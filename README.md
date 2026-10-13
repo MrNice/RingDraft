@@ -13,6 +13,7 @@ A Slay the Spire 2 co-op mod. Players sit in a ring, and the player before you m
 | Attack / Skill / Power potion choice | **Picker** |
 | Toolbox-style relic choices at combat start | **Picker** |
 | Cards from Ancient gifts (Neow etc.): Scroll Boxes packs, Lost Coffer / Orrery / Glass Eye rewards, Hefty Tablet / Massive Scroll choices | **Picker**, after **you** choose the gift |
+| Which cards a gift removes, transforms or upgrades (Neow's Precise Scissors, Precarious Shears, New Leaf; Pomander) | **Picker**, after **you** choose the gift |
 | Card-effect choices (Discovery-style) | You (configurable) |
 | Combat turns, potion use, targeting | You |
 | Event options, event card rewards | You |
@@ -93,6 +94,7 @@ Every game type, member, signal and Harmony target the mod uses was checked agai
 | Potion / Toolbox / Discovery "choose a card" | `NChooseACardSelectionScreen` |
 | Smith upgrade | `NDeckUpgradeSelectScreen` (only appears after Smith is chosen) |
 | Scroll Boxes packs | `NChooseABundleSelectionScreen` |
+| Gift removals / transforms / upgrades | `NDeckCardSelectScreen` (removal prompt only), `NDeckTransformSelectScreen`, `NDeckUpgradeSelectScreen` outside rest sites |
 | Opening everyone's card reward | `NRewardButton` on `NRewardsScreen` |
 | Shop removal | any `NCardGridSelectionScreen` opened by a removal the picker bought |
 | Shop | `NMerchantRoom.Instance.Inventory` while `IsOpen` |

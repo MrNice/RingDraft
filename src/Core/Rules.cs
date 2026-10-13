@@ -17,6 +17,9 @@ public enum ScreenKind
     Other,
 }
 
+/// <summary>Which deck grid is open: what choosing cards on it will do.</summary>
+public enum DeckGridKind { Other, Upgrade, Remove, Transform }
+
 /// <summary>Ancient is Neow and the other Ancients: an event room whose event is an Ancient.</summary>
 public enum RoomKind { Other, Combat, Merchant, RestSite, Event, Treasure, Ancient }
 
@@ -33,6 +36,12 @@ public enum DecisionKind : byte
     ShopRemovalPick = 5,
     /// <summary>Choose one pack of cards out of several.</summary>
     Bundle = 6,
+    /// <summary>Cards to remove from the deck, from a gift like Neow's Precise Scissors or Precarious Shears.</summary>
+    DeckRemove = 7,
+    /// <summary>Cards to transform, from a gift like Neow's New Leaf.</summary>
+    DeckTransform = 8,
+    /// <summary>Cards to upgrade, from a gift like Pomander (Smith has its own kind).</summary>
+    DeckUpgrade = 9,
 }
 
 public sealed class RulesConfig
@@ -73,7 +82,8 @@ public readonly record struct ScreenContext(
     RoomKind Room,
     string? LastRestOption,
     ChoiceSource Source,
-    bool ShopRemovalPending);
+    bool ShopRemovalPending,
+    DeckGridKind Grid = DeckGridKind.Other);
 
 public static class DelegationRules
 {
@@ -114,7 +124,15 @@ public static class DelegationRules
                 // The owner chose Smith over Rest; which card gets upgraded is the picker's call.
                 if (ctx.Room == RoomKind.RestSite && cfg.DelegateSmith && IsSmith(ctx.LastRestOption))
                     return DecisionKind.SmithUpgrade;
-                return null;
+                // Which cards a gift removes, transforms or upgrades. The owner already chose the gift.
+                if (!GiftDeckChoice(ctx.Room, cfg)) return null;
+                return ctx.Grid switch
+                {
+                    DeckGridKind.Remove => DecisionKind.DeckRemove,
+                    DeckGridKind.Transform => DecisionKind.DeckTransform,
+                    DeckGridKind.Upgrade => DecisionKind.DeckUpgrade,
+                    _ => null,
+                };
 
             case ScreenKind.ShopInventory:
                 return cfg.DelegateShop && ctx.Room == RoomKind.Merchant ? DecisionKind.Shop : null;
@@ -132,6 +150,22 @@ public static class DelegationRules
         RoomKind.Combat => false,
         _ => cfg.DelegateRelicChoices,
     };
+
+    /// <summary>
+    /// A deck grid opened by a relic's pickup effect: at an Ancient (Neow's Precise Scissors, New Leaf...), or from a
+    /// chest or on the map. Not in events or rest sites (the owner's own choices there), and not at the merchant,
+    /// where the only removal is the one the picker already chose.
+    /// </summary>
+    private static bool GiftDeckChoice(RoomKind room, RulesConfig cfg) => room switch
+    {
+        RoomKind.Ancient => cfg.DelegateAncientRewards,
+        RoomKind.Treasure or RoomKind.Other => cfg.DelegateRelicChoices,
+        _ => false,
+    };
+
+    /// <summary>Remove, transform or upgrade cards from the owner's deck: answered with one or more card indices.</summary>
+    public static bool IsDeckChoice(DecisionKind kind) =>
+        kind is DecisionKind.DeckRemove or DecisionKind.DeckTransform or DecisionKind.DeckUpgrade;
 
     public static bool IsSmith(string? restOptionId) =>
         restOptionId is not null && restOptionId.Contains("SMITH", StringComparison.OrdinalIgnoreCase);
