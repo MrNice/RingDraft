@@ -480,13 +480,13 @@ internal partial class RingDraftController : Node
     }
 
     /// <summary>
-    /// Out of combat the real screen opens by itself. In combat it waits for the picker to press
-    /// "Show the cards", so a teammate's potion never interrupts the picker's own turn.
+    /// The real screen opens by itself, in combat too unless AutoOpenInCombat is off; then it waits for the
+    /// picker to press "Show the cards", so a teammate's potion never covers the picker's hand mid-turn.
     /// </summary>
     private bool ShouldAutoOpen(OfferMsg o) =>
         Config.Rules.UseGameScreens
         && NativeScreens.Supports(o)
-        && !GameQuery.InCombat()
+        && (Config.Rules.AutoOpenInCombat || !GameQuery.InCombat())
         && !_autoOpened.Contains((o.From, o.RequestId));
 
     /// <summary>Shows the neighbour's shop on the game's own merchant rug, and keeps it in step with each new state.</summary>

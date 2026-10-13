@@ -73,6 +73,11 @@ public sealed class RulesConfig
     /// closes when their picker is done with it.
     /// </summary>
     public bool OpenAllShops { get; set; } = true;
+    /// <summary>
+    /// In combat (Toolbox, a teammate's Attack/Skill/Power potion), open the picker's card screen straight away.
+    /// Off: the picker gets the list with a "Show the cards" button, so nothing covers their hand mid-turn.
+    /// </summary>
+    public bool AutoOpenInCombat { get; set; } = true;
     /// <summary>Show the picker the game's own card screens (real art) instead of the text list.</summary>
     public bool UseGameScreens { get; set; } = true;
     /// <summary>Picker clockwise vs counter-clockwise.</summary>

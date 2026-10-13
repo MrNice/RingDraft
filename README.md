@@ -49,7 +49,7 @@ dotnet run --project tests\CoreTests
 
 ## How it works
 
-Authority never moves. When your card reward screen opens, your client covers it with a "Alex is picking your card reward…" panel and sends the options to your picker over the game's own co-op channel. The picker sees the game's own card reward, choose-a-card, or Smith screen, filled with exact copies of your cards (upgrades and enchantments included) and titled "Choose for <you>". Out of combat it opens automatically; in combat it waits for the picker to press **Show the cards**, so a teammate's potion never interrupts their turn. A side panel also lists the options as text, with your gold, relics, and deck, as a fallback. Their click comes back as a message; your client validates it (right request, right sender, in range) and then presses the card on your own screen. To the game it looks like you clicked, so vanilla sync, RNG, and saves are untouched.
+Authority never moves. When your card reward screen opens, your client covers it with a "Alex is picking your card reward…" panel and sends the options to your picker over the game's own co-op channel. The picker sees the game's own card reward, choose-a-card, or Smith screen, filled with exact copies of your cards (upgrades and enchantments included) and titled "Choose for <you>". It opens automatically, in combat too (Toolbox, a teammate's potion). Set `AutoOpenInCombat` to `false` if you'd rather it wait for the picker to press **Show the cards** mid-fight. A side panel also lists the options as text, with your gold, relics, and deck, as a fallback. Their click comes back as a message; your client validates it (right request, right sender, in range) and then presses the card on your own screen. To the game it looks like you clicked, so vanilla sync, RNG, and saves are untouched.
 
 The shop works the same way, but it stays open for repeated actions. The picker gets your shop on the game's own merchant rug, laid over theirs, with your cards, relics, potions, prices and gold. Clicking an item sends the request to you; your client makes the real purchase through your merchant entry and sends back the new shop state, so sold items vanish and prices follow your gold. The card-removal slot opens your deck on the game's deck screen for the picker to choose from. Closing the rug (or **Done shopping** in the side list) ends the trip: your own rug closes too, and talking to the merchant again starts a new trip. When anyone opens their shop, everyone else's opens too, so everybody shops for their neighbour at the same time. Bought items, and cards the picker takes from any card screen, fly into your row in the player list. Nothing on the picker's copy can buy anything on their side.
 
@@ -78,6 +78,7 @@ tests/      dependency-free test runner for src/Core
   "DelegateUnknownCombatChoices": true,
   "OpenAllCardRewards": true,
   "OpenAllShops": true,
+  "AutoOpenInCombat": true,
   "UseGameScreens": true,
   "ReverseRing": false,
   "TimeoutSeconds": 90,
