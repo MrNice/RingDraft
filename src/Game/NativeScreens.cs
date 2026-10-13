@@ -69,7 +69,7 @@ internal static class NativeScreens
                     : new List<CardRewardAlternative>();
                 var screen = NCardRewardSelectionScreen.ShowScreen(options, alternatives);
                 if (screen is null) return null;
-                var result = RewardResult(screen, cards.Count); // must start before any card can be clicked
+                var result = RewardResult(screen, cards, o.From); // must start before any card can be clicked
                 Retitle(screen, $"Choose for {ownerName}");
                 return new Open(screen, One(result));
             }
@@ -78,7 +78,7 @@ internal static class NativeScreens
             {
                 var screen = NChooseACardSelectionScreen.ShowScreen(cards, o.CanSkip);
                 if (screen is null) return null;
-                var result = CardsResult(screen.CardsSelected(), cards, o.CanSkip);
+                var result = CardsResult(screen.CardsSelected(), cards, o.CanSkip, screen, o.From);
                 Retitle(screen, $"Choose for {ownerName}");
                 return new Open(screen, One(result));
             }
@@ -193,12 +193,25 @@ internal static class NativeScreens
         return indices.All(i => i >= 0) && indices.Distinct().Count() == indices.Length ? indices : null;
     }
 
-    private static async Task<int?> RewardResult(NCardRewardSelectionScreen screen, int cardCount)
+    private static async Task<int?> RewardResult(NCardRewardSelectionScreen screen, List<CardModel> cards, ulong owner)
     {
         int? chosen = await screen.OptionSelected();
+        if (chosen is { } i && i >= 0 && i < cards.Count) FlyChosen(screen, cards[i], owner);
         Close(screen); // the reward screen leaves closing to its caller
         if (chosen is null) return null;
-        return chosen.Value >= 0 && chosen.Value < cardCount ? chosen.Value : -1; // past the cards = Skip
+        return chosen.Value >= 0 && chosen.Value < cards.Count ? chosen.Value : -1; // past the cards = Skip
+    }
+
+    /// <summary>The picked card leaves the screen the way a taken card does, but into the owner's row in the player list.</summary>
+    private static void FlyChosen(Node screen, CardModel card, ulong owner)
+    {
+        try
+        {
+            if (!Nodes.Alive(screen)) return;
+            var holder = UiDriver.Holders(screen).FirstOrDefault(h => ReferenceEquals(h.CardModel, card));
+            if (holder?.CardNode is { } node && Nodes.Alive(node)) MimicFly.Fly(node, owner);
+        }
+        catch (Exception ex) { Log.Warn($"Card fly failed: {ex.Message}"); }
     }
 
     private static async Task<int?> BundleResult(NChooseABundleSelectionScreen screen,
@@ -211,12 +224,14 @@ internal static class NativeScreens
         return index >= 0 ? index : null;
     }
 
-    private static async Task<int?> CardsResult(Task<IEnumerable<CardModel>> selected, List<CardModel> offered, bool canSkip)
+    private static async Task<int?> CardsResult(Task<IEnumerable<CardModel>> selected, List<CardModel> offered, bool canSkip,
+        Node? screen = null, ulong owner = 0)
     {
         var picked = (await selected)?.ToList() ?? new List<CardModel>();
         if (picked.Count == 0) return canSkip ? -1 : null;
 
         var card = picked[0];
+        if (screen is not null) FlyChosen(screen, card, owner);
         int index = offered.FindIndex(c => ReferenceEquals(c, card));
         if (index < 0) index = offered.FindIndex(c => c.Id.Equals(card.Id) && c.CurrentUpgradeLevel == card.CurrentUpgradeLevel);
         return index >= 0 ? index : null;

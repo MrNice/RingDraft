@@ -68,6 +68,11 @@ public sealed class RulesConfig
     /// instead of taking turns on the rewards screen.
     /// </summary>
     public bool OpenAllCardRewards { get; set; } = true;
+    /// <summary>
+    /// The shop works the same way: when a neighbour opens their shop, this player's opens too, and each player's shop
+    /// closes when their picker is done with it.
+    /// </summary>
+    public bool OpenAllShops { get; set; } = true;
     /// <summary>Show the picker the game's own card screens (real art) instead of the text list.</summary>
     public bool UseGameScreens { get; set; } = true;
     /// <summary>Picker clockwise vs counter-clockwise.</summary>

@@ -363,7 +363,10 @@ internal partial class RingDraftController : Node
             case ShopActionType.Done:
                 ReleaseBlocker(shop);
                 _active = null;
-                Log.Info($"{_net.NameOf(sender)} finished shopping for you");
+                // The trip is over for you too: your rug closes, so nothing more gets bought outside the hand-off.
+                // Talking to the merchant again starts a new trip for your picker.
+                if (Nodes.Alive(shop.Screen) && GameQuery.ShopInventoryNode() == shop.Screen) GameQuery.CloseShop(shop.Screen);
+                Log.Info($"{_net.NameOf(sender)} finished shopping for you; your shop is closed");
                 break;
 
             case ShopActionType.Buy:
@@ -499,6 +502,7 @@ internal partial class RingDraftController : Node
         }
         CloseMimic();
         if (!MimicShop.CanOpen()) return;
+        OpenMyShopToo(s);
 
         ulong owner = s.From;
         uint request = s.RequestId;
@@ -528,6 +532,17 @@ internal partial class RingDraftController : Node
         _mimic = shop;
         _mimicShown = s;
         Log.Info($"Opened {_net.NameOf(owner)}'s shop (#{request})");
+    }
+
+    /// <summary>A neighbour opened their shop: open ours too, so it goes to our picker while we shop for them.</summary>
+    private void OpenMyShopToo(ShopStateMsg s)
+    {
+        if (!Config.Rules.OpenAllShops || _active is not null || GameQuery.ShopInventoryNode() is not null) return;
+        if (!_mirrored.Add((s.From, s.RequestId))) return;
+        var ctx = new ScreenContext(ScreenKind.ShopInventory, GameQuery.Room(), null, ChoiceSource.Unknown, false);
+        if (DelegationRules.Classify(ctx, Config.Rules) != DecisionKind.Shop) return;
+        if (new RingOrder(GameQuery.SeatOrder(), Config.Rules.ReverseRing).PickerFor(_me) is null) return;
+        if (GameQuery.OpenShop()) Log.Info("Opened your shop too, so everyone shops at once");
     }
 
     private void CloseMimic()

@@ -14,6 +14,7 @@ using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Nodes.Screens.Shops;
 using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
@@ -146,6 +147,36 @@ internal static class GameQuery
         var shown = NMerchantRoom.Instance?.Inventory?.Inventory;
         if (shown is not null) return shown;
         return RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom is MerchantRoom room ? room.GetLocalInventory() : null;
+    }
+
+    /// <summary>Opens this player's merchant rug, as talking to the merchant does.</summary>
+    public static bool OpenShop()
+    {
+        try
+        {
+            var room = NMerchantRoom.Instance;
+            if (room?.Inventory is null || room.Inventory.IsOpen) return false;
+            var open = HarmonyLib.AccessTools.Method(typeof(NMerchantRoom), "OpenInventory");
+            if (open is null) return false;
+            open.Invoke(room, null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Couldn't open your shop: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Closes a merchant rug the way its back button does (the game keeps Close private).</summary>
+    public static void CloseShop(Node inventory)
+    {
+        try
+        {
+            if (inventory is NMerchantInventory { IsOpen: true } inv)
+                HarmonyLib.AccessTools.Method(typeof(NMerchantInventory), "Close")?.Invoke(inv, null);
+        }
+        catch (Exception ex) { Log.Warn($"Couldn't close the shop: {ex.Message}"); }
     }
 
     /// <summary>

@@ -2,11 +2,13 @@ using System.Reflection;
 using Godot;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
@@ -174,6 +176,16 @@ internal sealed class MimicShop
         var view = _state.Items.FirstOrDefault(i => i.Index == index);
         UpdateHeader(view is null ? "" : $"Buying {view.Title}…");
         _actions.Buy(index);
+
+        // Show the purchase the way the game does, but flying to the owner's row in the player list.
+        // The slot empties now; if the owner's client refuses the purchase, the next state puts the item back.
+        if (view is not null)
+        {
+            MimicFly.ToOwner(this, entry);
+            Fill(entry, view with { Stocked = false }, _owner);
+            EntryUpdated(entry);
+            try { SfxCmd.Play("event:/sfx/npcs/merchant/merchant_thank_yous", 1f); } catch { /* sound is a nicety */ }
+        }
         return Task.FromResult(false);
     }
 
@@ -403,6 +415,126 @@ internal sealed class MimicShop
     {
         try { AccessTools.Method(target.GetType(), method)?.Invoke(target, null); }
         catch (Exception ex) { Log.Warn($"{method} failed: {ex.Message}"); }
+    }
+}
+
+/// <summary>
+/// A bought item's icon flies from the shop slot to the owner's row in the player list. The row's own
+/// "obtained" pop (played when the purchase syncs) waits until the icon lands.
+/// </summary>
+internal static class MimicFly
+{
+    private static readonly Dictionary<ulong, Task> Landing = new();
+    [ThreadStatic] internal static bool Bypass;
+    private static CanvasLayer? _layer;
+
+    public static bool TryLanding(ulong player, out Task landing)
+    {
+        if (Landing.TryGetValue(player, out var t) && !t.IsCompleted) { landing = t; return true; }
+        landing = Task.CompletedTask;
+        return false;
+    }
+
+    public static void ToOwner(MimicShop shop, MerchantEntry entry)
+    {
+        try
+        {
+            var slot = Nodes.FindAll<NMerchantSlot>(shop.Node).FirstOrDefault(s => ReferenceEquals(s.Entry, entry));
+            string? field = slot switch
+            {
+                NMerchantRelic => "_relicNode",
+                NMerchantPotion => "_potionNode",
+                NMerchantCard => "_cardNode",
+                _ => null,
+            };
+            var info = field is null ? null : slot!.GetType().GetField(field, BindingFlags.Instance | BindingFlags.NonPublic);
+            if (info?.GetValue(slot) is not CanvasItem visual || !Nodes.Alive(visual)) return;
+            // Take the icon out of the slot so the slot's own refresh doesn't free it mid-flight.
+            if (Fly(visual, shop.Owner))
+            {
+                info.SetValue(slot, null);
+                AccessTools.Method(typeof(NMerchantSlot), "ClearHoverTip")?.Invoke(slot, null);
+            }
+        }
+        catch (Exception ex) { Log.Warn($"Purchase animation failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// Lifts a card, relic or potion node off its screen and sends it, shrinking, into the owner's row in the
+    /// player list. Returns false (and leaves the node alone) if there is no row to fly to.
+    /// </summary>
+    public static bool Fly(CanvasItem visual, ulong owner)
+    {
+        try
+        {
+            if (!Nodes.Alive(visual) || visual.GetTree() is not { } tree) return false;
+            var row = Nodes.FindAll<NMultiplayerPlayerState>(tree.Root).FirstOrDefault(r => r.Player?.NetId == owner && r.IsVisibleInTree());
+            if (row is null) return false;
+
+            var start = visual.GetGlobalTransformWithCanvas();
+            var rowXf = row.GetGlobalTransformWithCanvas();
+            var target = rowXf.Origin + row.Size * rowXf.Scale * new Vector2(0.25f, 0.5f);
+
+            if (_layer is null || !Nodes.Alive(_layer))
+            {
+                _layer = new CanvasLayer { Name = "RingDraftFly", Layer = 120 };
+                tree.Root.AddChild(_layer);
+            }
+            visual.GetParent()?.RemoveChild(visual);
+            _layer.AddChild(visual);
+            if (visual is Control c) { c.MouseFilter = Control.MouseFilterEnum.Ignore; c.GlobalPosition = start.Origin; c.Scale = start.Scale; }
+            else if (visual is Node2D n) { n.GlobalPosition = start.Origin; n.Scale = start.Scale; }
+
+            var done = new TaskCompletionSource();
+            Landing[owner] = done.Task;
+            float endScale = visual is Node2D ? 0.12f : 0.45f; // cards are Node2D and large; relic/potion icons are small Controls
+            var tween = visual.CreateTween();
+            tween.SetParallel();
+            tween.TweenProperty(visual, "global_position", target, 0.6).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+            tween.TweenProperty(visual, "scale", start.Scale * endScale, 0.6).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
+            tween.TweenProperty(visual, "modulate:a", 0.0f, 0.15).SetDelay(0.5);
+            tween.Chain().TweenCallback(Callable.From(() =>
+            {
+                done.TrySetResult();
+                if (Nodes.Alive(visual)) visual.QueueFree();
+            }));
+            // Never hold the row's animation for long, whatever happens to the tween.
+            tree.CreateTimer(1.5).Timeout += () => done.TrySetResult();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Fly animation failed: {ex.Message}");
+            return false;
+        }
+    }
+}
+
+/// <summary>Holds the player row's "obtained" pop until the flying icon arrives.</summary>
+[HarmonyPatch]
+internal static class MimicLandingPatch
+{
+    private static IEnumerable<MethodBase> TargetMethods() =>
+        new[] { "AnimateRelicObtained", "AnimatePotionObtained", "AnimateCardObtained" }
+            .Select(name => AccessTools.Method(typeof(NMultiplayerPlayerState), name))
+            .Where(m => m is not null)!;
+
+    private static bool Prefix(NMultiplayerPlayerState __instance, object __0, MethodBase __originalMethod, ref Task __result)
+    {
+        if (MimicFly.Bypass || __instance.Player is not { } player || !MimicFly.TryLanding(player.NetId, out var landing)) return true;
+        __result = AfterLanding(__instance, __0, __originalMethod, landing);
+        return false;
+    }
+
+    private static async Task AfterLanding(NMultiplayerPlayerState row, object model, MethodBase original, Task landing)
+    {
+        await landing;
+        if (!Nodes.Alive(row)) return;
+        Task? animation;
+        MimicFly.Bypass = true;
+        try { animation = original.Invoke(row, new[] { model }) as Task; }
+        finally { MimicFly.Bypass = false; }
+        if (animation is not null) await animation;
     }
 }
 
