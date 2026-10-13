@@ -34,12 +34,27 @@ internal static class NativeScreens
     public static Open? Show(OfferMsg o, string ownerName)
     {
         var owner = GameQuery.PlayerById(o.From);
-        var cards = new List<CardModel>(o.Options.Count);
-        foreach (var view in o.Options)
+        List<CardModel>? cards;
+        if (o.Kind == DecisionKind.SmithUpgrade)
         {
-            var card = CardCodec.Rebuild(view.Blob, owner);
-            if (card is null) return null;
-            cards.Add(card);
+            // The upgrade preview reads the card's pile and run scope, which only real deck cards have.
+            // Every client holds every player's deck, so show the owner's own cards.
+            cards = DeckCards(o.Options, owner);
+            if (cards is null)
+            {
+                Log.Warn("Couldn't match the Smith options to the owner's deck; using the list instead");
+                return null;
+            }
+        }
+        else
+        {
+            cards = new List<CardModel>(o.Options.Count);
+            foreach (var view in o.Options)
+            {
+                var card = CardCodec.Rebuild(view.Blob, owner);
+                if (card is null) return null;
+                cards.Add(card);
+            }
         }
 
         switch (o.Kind)
@@ -95,6 +110,30 @@ internal static class NativeScreens
             default:
                 return null;
         }
+    }
+
+    /// <summary>The owner's actual deck cards for these options, in the same order, or null if any is missing.</summary>
+    private static List<CardModel>? DeckCards(IReadOnlyList<CardView> options, Player? owner)
+    {
+        var deck = owner?.Deck?.Cards.ToList();
+        if (deck is null) return null;
+        var used = new HashSet<CardModel>();
+        var result = new List<CardModel>(options.Count);
+        foreach (var view in options)
+        {
+            var match = deck.FirstOrDefault(c => !used.Contains(c) && Same(c, view, checkTitle: true))
+                     ?? deck.FirstOrDefault(c => !used.Contains(c) && Same(c, view, checkTitle: false));
+            if (match is null) return null;
+            used.Add(match);
+            result.Add(match);
+        }
+        return result;
+    }
+
+    private static bool Same(CardModel card, CardView view, bool checkTitle)
+    {
+        if ((card.GetType().FullName ?? card.GetType().Name) != view.Id || card.CurrentUpgradeLevel != view.Upgrades) return false;
+        return !checkTitle || GameQuery.View(card).Title == view.Title;
     }
 
     /// <summary>Takes a picker screen down, e.g. when the owner took the choice back.</summary>
