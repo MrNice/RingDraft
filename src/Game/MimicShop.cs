@@ -7,6 +7,10 @@ using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Nodes.Vfx;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Multiplayer;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
@@ -428,6 +432,34 @@ internal static class MimicFly
     [ThreadStatic] internal static bool Bypass;
     private static CanvasLayer? _layer;
 
+    /// <summary>
+    /// Cards use the game's own card flight (NCardFlyVfx): the character's trail, shrinking, turning head-first along
+    /// an arc. It normally aims at a pile on the local top bar; here its end point is the owner's row instead, and it
+    /// isn't "adding to a pile", so nothing touches the owner's piles on this client.
+    /// </summary>
+    private static bool FlyCard(NCard card, ulong owner, NMultiplayerPlayerState row)
+    {
+        var global = NRun.Instance?.GlobalUi;
+        var trail = GameQuery.PlayerById(owner)?.Character?.TrailPath;
+        if (global?.TopBar?.TrailContainer is not { } trails || trail is null) return false;
+
+        var rowXf = row.GetGlobalTransformWithCanvas();
+        var target = rowXf.Origin + row.Size * rowXf.Scale * new Vector2(0.25f, 0.5f);
+
+        global.ReparentCard(card); // onto the global UI, where the game flies cards from
+        var vfx = NCardFlyVfx.Create(card, PileType.Deck, false, trail);
+        if (vfx is null) return false;
+        typeof(NCardFlyVfx).GetField("_endPos", BindingFlags.Instance | BindingFlags.NonPublic)?.SetValue(vfx, target);
+
+        var done = new TaskCompletionSource();
+        Landing[owner] = done.Task;
+        card.Connect(Node.SignalName.TreeExited, Callable.From(() => done.TrySetResult()), (uint)GodotObject.ConnectFlags.OneShot);
+        card.GetTree().CreateTimer(1.2).Timeout += () => done.TrySetResult();
+        trails.AddChild(vfx);
+        try { SfxCmd.Play("event:/sfx/ui/cards/card_movement_B_into_deck", 1f); } catch { /* sound is a nicety */ }
+        return true;
+    }
+
     public static bool TryLanding(ulong player, out Task landing)
     {
         if (Landing.TryGetValue(player, out var t) && !t.IsCompleted) { landing = t; return true; }
@@ -470,6 +502,8 @@ internal static class MimicFly
             if (!Nodes.Alive(visual) || visual.GetTree() is not { } tree) return false;
             var row = Nodes.FindAll<NMultiplayerPlayerState>(tree.Root).FirstOrDefault(r => r.Player?.NetId == owner && r.IsVisibleInTree());
             if (row is null) return false;
+
+            if (visual is NCard card) return FlyCard(card, owner, row);
 
             var start = visual.GetGlobalTransformWithCanvas();
             var rowXf = row.GetGlobalTransformWithCanvas();
