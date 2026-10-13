@@ -29,7 +29,31 @@ public sealed record OfferMsg(
     IReadOnlyList<CardView> Deck,
     int Gold,
     IReadOnlyList<string> Relics,
-    int TimeoutSeconds) : Envelope(RequestId, From, To);
+    int TimeoutSeconds) : Envelope(RequestId, From, To)
+{
+    /// <summary>
+    /// For DecisionKind.Bundle: how many of Options belong to each pack, in order (e.g. [3,3,3]).
+    /// The picker's answer is then a pack index. Empty for every other kind.
+    /// </summary>
+    public IReadOnlyList<int> Groups { get; init; } = Array.Empty<int>();
+
+    /// <summary>Options split into packs according to Groups.</summary>
+    public List<List<CardView>> Packs()
+    {
+        var packs = new List<List<CardView>>();
+        int at = 0;
+        foreach (int size in Groups)
+        {
+            if (size < 0 || at + size > Options.Count) break;
+            packs.Add(Options.Skip(at).Take(size).ToList());
+            at += size;
+        }
+        return packs;
+    }
+
+    /// <summary>How many answers there are: packs for a bundle, cards otherwise.</summary>
+    public int ChoiceCount => Kind == DecisionKind.Bundle ? Groups.Count : Options.Count;
+}
 
 /// <summary>Picker → owner: option index, or -1 to skip.</summary>
 public sealed record PickMsg(uint RequestId, ulong From, ulong To, int OptionIndex) : Envelope(RequestId, From, To);
@@ -94,6 +118,8 @@ public static class Codec
                 w.Write(o.Gold);
                 Strings(w, o.Relics);
                 w.Write(o.TimeoutSeconds);
+                Count(w, o.Groups.Count);
+                foreach (int g in o.Groups) w.Write(g);
                 break;
             case PickMsg p:
                 w.Write((byte)Tag.Pick); Head(w, p);
@@ -149,7 +175,16 @@ public static class Codec
                     int gold = r.ReadInt32();
                     var relics = ReadStrings(r);
                     int timeout = r.ReadInt32();
-                    envelope = new OfferMsg(id, from, to, kind, options, canSkip, deck, gold, relics, timeout);
+                    int groupCount = ReadCount(r);
+                    var groups = new List<int>(groupCount);
+                    for (int g = 0; g < groupCount; g++)
+                    {
+                        int size = r.ReadInt32();
+                        if (size < 0 || size > MaxList) return false;
+                        groups.Add(size);
+                    }
+                    if (groups.Sum() > options.Count) return false;
+                    envelope = new OfferMsg(id, from, to, kind, options, canSkip, deck, gold, relics, timeout) { Groups = groups };
                     break;
                 }
                 case Tag.Pick:

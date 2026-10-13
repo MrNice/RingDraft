@@ -8,9 +8,12 @@ using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
+using MegaCrit.Sts2.Core.Nodes.Rewards;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
+using MegaCrit.Sts2.Core.Rewards;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
 using RingDraft.Core;
@@ -46,6 +49,7 @@ internal static class GameQuery
         {
             MerchantRoom => RoomKind.Merchant,
             RestSiteRoom => RoomKind.RestSite,
+            EventRoom { CanonicalEvent: AncientEventModel } => RoomKind.Ancient,
             EventRoom => RoomKind.Event,
             TreasureRoom => RoomKind.Treasure,
             _ => RoomKind.Other,
@@ -74,6 +78,8 @@ internal static class GameQuery
                 return ScreenKind.CardReward;
             case NChooseACardSelectionScreen:          // Attack/Skill/Power potions, Toolbox, Discovery-style cards
                 return ScreenKind.GeneratedCardChoice;
+            case NChooseABundleSelectionScreen:        // Scroll Boxes: choose a pack
+                return ScreenKind.Bundle;
             case NDeckUpgradeSelectScreen:
                 isUpgradeGrid = true;
                 return ScreenKind.DeckGrid;
@@ -237,6 +243,61 @@ internal static class UiDriver
     }
 
     public static bool HasSkip(Node screen) => SkipButton(screen) is not null;
+
+    /// <summary>The packs on a choose-a-pack screen, in on-screen order.</summary>
+    public static List<NCardBundle> Bundles(Node screen) =>
+        Nodes.FindAll<NCardBundle>(screen).Where(b => b.Bundle is { Count: > 0 }).ToList();
+
+    /// <summary>Every card of every pack (with card data) plus how many cards each pack has.</summary>
+    public static (List<CardView> Cards, List<int> Groups) BundleOptions(Node screen)
+    {
+        var cards = new List<CardView>();
+        var groups = new List<int>();
+        foreach (var bundle in Bundles(screen))
+        {
+            foreach (var card in bundle.Bundle) cards.Add(GameQuery.View(card, withCardData: true));
+            groups.Add(bundle.Bundle.Count);
+        }
+        return (cards, groups);
+    }
+
+    /// <summary>Opens the pack's preview, as clicking it would; ConfirmWhenEnabled then takes it.</summary>
+    public static bool PressBundle(Node screen, int index)
+    {
+        var bundles = Bundles(screen);
+        if (index < 0 || index >= bundles.Count) return false;
+        var bundle = bundles[index];
+        bundle.EmitSignal(NCardBundle.SignalName.Clicked, bundle);
+        return true;
+    }
+
+    /// <summary>
+    /// If this player's rewards screen is on top and still has a card reward they haven't opened or skipped,
+    /// opens it as clicking it would. <paramref name="tried"/> keeps one reward from being opened twice.
+    /// </summary>
+    public static bool OpenOwnCardReward(HashSet<ulong> tried)
+    {
+        if (GameQuery.TopOverlay() is not NRewardsScreen rewards) return false;
+
+        var skipped = new HashSet<Control>();
+        try
+        {
+            if (typeof(NRewardsScreen).GetField("_skippedRewardButtons", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    ?.GetValue(rewards) is IEnumerable<Control> list)
+                skipped.UnionWith(list);
+        }
+        catch { /* best effort: tried still stops repeats */ }
+
+        var button = Nodes.FindAll<NRewardButton>(rewards).FirstOrDefault(b =>
+            b.Reward is CardReward { SuccessfullySelected: false }
+            && b.IsEnabled && b.IsVisibleInTree()
+            && !skipped.Contains(b) && !tried.Contains(b.GetInstanceId()));
+        if (button is null) return false;
+
+        tried.Add(button.GetInstanceId());
+        button.ForceClick();
+        return true;
+    }
 
     public static bool PressHolder(Node screen, int index)
     {

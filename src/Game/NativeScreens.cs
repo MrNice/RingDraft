@@ -26,8 +26,9 @@ internal static class NativeScreens
     public sealed record Open(Node Screen, Task<int?> Result);
 
     public static bool Supports(OfferMsg o) =>
-        o.Kind is DecisionKind.CardReward or DecisionKind.GeneratedCardChoice or DecisionKind.SmithUpgrade
+        o.Kind is DecisionKind.CardReward or DecisionKind.GeneratedCardChoice or DecisionKind.SmithUpgrade or DecisionKind.Bundle
         && o.Options.Count > 0
+        && (o.Kind != DecisionKind.Bundle || o.Packs().Count == o.Groups.Count && o.Groups.Count > 0)
         && o.Options.All(c => !string.IsNullOrEmpty(c.Blob));
 
     public static Open? Show(OfferMsg o, string ownerName)
@@ -65,6 +66,22 @@ internal static class NativeScreens
                 return new Open(screen, result);
             }
 
+            case DecisionKind.Bundle:
+            {
+                var packs = new List<IReadOnlyList<CardModel>>();
+                int at = 0;
+                foreach (int size in o.Groups)
+                {
+                    packs.Add(cards.GetRange(at, size));
+                    at += size;
+                }
+                var screen = NChooseABundleSelectionScreen.ShowScreen(packs);
+                if (screen is null) return null;
+                var result = BundleResult(screen, screen.CardsSelected(), packs);
+                Retitle(screen, $"Choose a pack for {ownerName}");
+                return new Open(screen, result);
+            }
+
             case DecisionKind.SmithUpgrade:
             {
                 var runState = RunManager.Instance?.DebugOnlyGetState();
@@ -97,6 +114,16 @@ internal static class NativeScreens
         Close(screen); // the reward screen leaves closing to its caller
         if (chosen is null) return null;
         return chosen.Value >= 0 && chosen.Value < cardCount ? chosen.Value : -1; // past the cards = Skip
+    }
+
+    private static async Task<int?> BundleResult(NChooseABundleSelectionScreen screen,
+        Task<IEnumerable<IReadOnlyList<CardModel>>> selected, List<IReadOnlyList<CardModel>> packs)
+    {
+        var picked = (await selected)?.FirstOrDefault();
+        Close(screen); // like the reward screen, the pack screen leaves closing to its caller
+        if (picked is null || picked.Count == 0) return null;
+        int index = packs.FindIndex(p => ReferenceEquals(p, picked) || (p.Count > 0 && ReferenceEquals(p[0], picked[0])));
+        return index >= 0 ? index : null;
     }
 
     private static async Task<int?> CardsResult(Task<IEnumerable<CardModel>> selected, List<CardModel> offered, bool canSkip)

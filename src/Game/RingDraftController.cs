@@ -45,6 +45,13 @@ internal partial class RingDraftController : Node
     private readonly HashSet<(ulong, uint)> _autoOpened = new();
     private readonly HashSet<ulong> _pickerScreens = new();
 
+    // Everyone picks card rewards at once: a neighbour's card reward opens this player's own first.
+    private readonly HashSet<(ulong, uint)> _mirrored = new();
+    private readonly HashSet<ulong> _rewardButtonsTried = new();
+    private double _holdNativeUntil;
+    // A pick for this player's own screen that arrived while they were still choosing for a neighbour.
+    private (PickMsg Pick, ulong Sender)? _deferredPick;
+
     public override void _Ready()
     {
         Name = "RingDraft";
@@ -84,7 +91,7 @@ internal partial class RingDraftController : Node
         Drain(now);
         RunJobs(now);
         OwnerStep(now);
-        PickerStep();
+        PickerStep(now);
     }
 
     private void Reset()
@@ -96,6 +103,10 @@ internal partial class RingDraftController : Node
         CloseNative();
         _autoOpened.Clear();
         _pickerScreens.Clear();
+        _mirrored.Clear();
+        _rewardButtonsTried.Clear();
+        _holdNativeUntil = 0;
+        _deferredPick = null;
         _panel?.HideAll();
         _ledger = null;
         _inbox = null;
@@ -130,6 +141,7 @@ internal partial class RingDraftController : Node
 
         _handled.RemoveWhere(id => GodotObject.InstanceFromId(id) is null);
         _pickerScreens.RemoveWhere(id => GodotObject.InstanceFromId(id) is null);
+        _rewardButtonsTried.RemoveWhere(id => GodotObject.InstanceFromId(id) is null);
     }
 
     // ---------------------------------------------------------------- network
@@ -171,6 +183,15 @@ internal partial class RingDraftController : Node
 
         if (_active is { } a)
         {
+            // Applied once this player has finished choosing for their neighbour and their own screen is back on top.
+            if (_deferredPick is { } dp && dp.Pick.RequestId == a.Decision.RequestId)
+            {
+                if (pickerScreenOnTop && Nodes.Alive(a.Screen)) return;
+                _deferredPick = null;
+                Apply(a, dp.Pick, dp.Sender);
+                return;
+            }
+
             bool stillOpen = Nodes.Alive(a.Screen)
                 && (a.Kind != DecisionKind.Shop || GameQuery.ShopInventoryNode() == a.Screen);
             if (stillOpen)
@@ -229,20 +250,26 @@ internal partial class RingDraftController : Node
             return;
         }
 
-        var options = UiDriver.Options(screen);
-        if (options.Count == 0)
+        List<CardView> options;
+        List<int> groups = new();
+        if (kind == DecisionKind.Bundle) (options, groups) = UiDriver.BundleOptions(screen);
+        else options = UiDriver.Options(screen);
+
+        int choices = kind == DecisionKind.Bundle ? groups.Count : options.Count;
+        if (choices == 0)
         {
             Log.Warn($"{kind} screen had no readable cards; leaving it to you");
             return;
         }
-        bool canSkip = UiDriver.HasSkip(screen);
-        var decision = _ledger!.Open(kind, picker, options.Count, canSkip, now, timeout);
+        bool canSkip = kind != DecisionKind.Bundle && UiDriver.HasSkip(screen);
+        var decision = _ledger!.Open(kind, picker, choices, canSkip, now, timeout);
 
         _net.Send(new OfferMsg(decision.RequestId, _me, picker, kind, options, canSkip,
-            GameQuery.MyDeckViews(), GameQuery.MyGold(), GameQuery.MyRelics(), timeout));
+            GameQuery.MyDeckViews(), GameQuery.MyGold(), GameQuery.MyRelics(), timeout) { Groups = groups });
 
         string waiting = kind switch
         {
+            DecisionKind.Bundle => $"{who} is choosing your pack…",
             DecisionKind.SmithUpgrade => $"{who} is choosing which card you upgrade…",
             DecisionKind.GeneratedCardChoice => $"{who} is choosing your card…",
             _ => $"{who} is picking your card reward…",
@@ -273,18 +300,33 @@ internal partial class RingDraftController : Node
         }
         if (_active is not { } a || a.Decision.RequestId != p.RequestId) return;
 
+        // This player is still choosing for their neighbour; their own screen is underneath. Apply it once they're done.
+        var top = GameQuery.TopOverlay();
+        if (top is not null && top != a.Screen && _pickerScreens.Contains(top.GetInstanceId()))
+        {
+            _deferredPick = (p, sender);
+            Log.Info($"{_net.NameOf(sender)}'s pick #{p.RequestId} is in; applying it after you finish your choice");
+            return;
+        }
+        Apply(a, p, sender);
+    }
+
+    private void Apply(Active a, PickMsg p, ulong sender)
+    {
         ReleaseBlocker(a);
         _active = null;
         if (!Nodes.Alive(a.Screen)) return;
 
-        bool ok = p.OptionIndex == -1 ? UiDriver.PressSkip(a.Screen) : UiDriver.PressHolder(a.Screen, p.OptionIndex);
-        if (ok) WarnIfStillOpen(a.Screen, a.Kind);
+        bool ok = a.Kind == DecisionKind.Bundle ? UiDriver.PressBundle(a.Screen, p.OptionIndex)
+                : p.OptionIndex == -1 ? UiDriver.PressSkip(a.Screen)
+                : UiDriver.PressHolder(a.Screen, p.OptionIndex);
+        if (ok && a.Kind != DecisionKind.Bundle) WarnIfStillOpen(a.Screen, a.Kind);
         if (!ok)
         {
             Log.Warn($"Couldn't apply pick #{p.RequestId} (option {p.OptionIndex}); the screen is yours");
             return;
         }
-        if (a.Kind == DecisionKind.SmithUpgrade) ConfirmWhenEnabled(a.Screen);
+        if (a.Kind is DecisionKind.SmithUpgrade or DecisionKind.Bundle) ConfirmWhenEnabled(a.Screen);
         Log.Info($"Applied {_net.NameOf(sender)}'s {a.Kind} pick: option {p.OptionIndex}");
     }
 
@@ -368,7 +410,7 @@ internal partial class RingDraftController : Node
 
     // ---------------------------------------------------------------- picker side
 
-    private void PickerStep()
+    private void PickerStep(double now)
     {
         var current = _inbox?.Current;
 
@@ -383,6 +425,15 @@ internal partial class RingDraftController : Node
 
         if (current is OfferMsg offer && _native is null && ShouldAutoOpen(offer))
         {
+            // A neighbour opened a card reward: open ours too, and let it reach our picker before we start choosing.
+            if (offer.Kind == DecisionKind.CardReward && _mirrored.Add((offer.From, offer.RequestId)) && OpenMyCardRewardToo(now))
+                _holdNativeUntil = now + 2.5;
+            if (now < _holdNativeUntil && _active is null)
+            {
+                _panel.SetSuppressed(true);
+                return;
+            }
+            _holdNativeUntil = 0;
             _autoOpened.Add((offer.From, offer.RequestId));
             OpenNative(offer);
         }
@@ -418,6 +469,17 @@ internal partial class RingDraftController : Node
         && NativeScreens.Supports(o)
         && !GameQuery.InCombat()
         && !_autoOpened.Contains((o.From, o.RequestId));
+
+    private bool OpenMyCardRewardToo(double now)
+    {
+        if (!Config.Rules.OpenAllCardRewards || _active is not null) return false;
+        var ctx = new ScreenContext(ScreenKind.CardReward, GameQuery.Room(), null, SourceTracker.Infer(now), false);
+        if (DelegationRules.Classify(ctx, Config.Rules) != DecisionKind.CardReward) return false;
+        if (new RingOrder(GameQuery.SeatOrder(), Config.Rules.ReverseRing).PickerFor(_me) is null) return false;
+        if (!UiDriver.OpenOwnCardReward(_rewardButtonsTried)) return false;
+        Log.Info("Opened your card reward too, so everyone picks at once");
+        return true;
+    }
 
     private void OpenNative(OfferMsg o)
     {

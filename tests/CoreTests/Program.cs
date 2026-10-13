@@ -52,6 +52,14 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Combat, src: ChoiceSource.Card) is null, "card-effect choice stays with owner by default");
     Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Combat) == DecisionKind.GeneratedCardChoice, "unknown combat choice delegated by default");
     Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Event, src: ChoiceSource.Potion) is null, "generated choice outside combat (event) stays");
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Ancient) == DecisionKind.GeneratedCardChoice, "Hefty Tablet at Neow delegated");
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Merchant) == DecisionKind.GeneratedCardChoice, "Massive Scroll bought at shop delegated");
+    Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Treasure) == DecisionKind.GeneratedCardChoice, "card-choice relic from chest delegated");
+    Check(K(ScreenKind.CardReward, RoomKind.Ancient) == DecisionKind.CardReward, "Lost Coffer / Orrery card reward at Neow delegated");
+    Check(K(ScreenKind.Bundle, RoomKind.Ancient) == DecisionKind.Bundle, "Scroll Boxes packs at Neow delegated");
+    Check(K(ScreenKind.Bundle, RoomKind.Merchant) == DecisionKind.Bundle, "Scroll Boxes bought at shop delegated");
+    Check(K(ScreenKind.Bundle, RoomKind.Event) is null, "packs inside a regular event stay");
+    Check(K(ScreenKind.DeckGrid, RoomKind.Ancient) is null, "Neow remove/transform grids stay with owner");
 
     Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "SMITH") == DecisionKind.SmithUpgrade, "smith grid delegated after owner picks smith");
     Check(K(ScreenKind.DeckGrid, RoomKind.RestSite, rest: "smith_option") == DecisionKind.SmithUpgrade, "smith id match is case-insensitive substring");
@@ -65,6 +73,11 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Check(K(ScreenKind.Other, RoomKind.Treasure) is null, "treasure chest stays");
     Check(K(ScreenKind.None, RoomKind.Combat) is null, "plain combat stays");
 
+    cfg.DelegateAncientRewards = false;
+    Check(K(ScreenKind.CardReward, RoomKind.Ancient) is null && K(ScreenKind.Bundle, RoomKind.Ancient) is null
+          && K(ScreenKind.GeneratedCardChoice, RoomKind.Ancient) is null, "Ancient toggle off keeps all Ancient gifts");
+    Check(K(ScreenKind.Bundle, RoomKind.Merchant) == DecisionKind.Bundle, "Ancient toggle doesn't affect shop relics");
+    cfg.DelegateAncientRewards = true;
     cfg.DelegateCardEffectChoices = true;
     Check(K(ScreenKind.GeneratedCardChoice, RoomKind.Combat, src: ChoiceSource.Card) == DecisionKind.GeneratedCardChoice, "card-effect toggle works");
     cfg.DelegateShop = false;
@@ -118,6 +131,13 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Check(o2.Options[0].Blob == "AQIDBA==" && o2.Options[1].Blob == "", "card blobs survive (present and absent)");
     var huge = new OfferMsg(1, A, B, DecisionKind.CardReward, new List<CardView> { deck[0] with { Blob = new string('A', 5000) } }, false, new List<CardView>(), 0, new List<string>(), 1);
     Check(Codec.TryDecode(Codec.Encode(huge), out var hugeBack) && ((OfferMsg)hugeBack!).Options[0].Blob == "", "oversized blob dropped on encode, not sent");
+
+    var bundle = new OfferMsg(11, A, B, DecisionKind.Bundle, deck.Concat(deck).Concat(deck).ToList(), false, deck, 50, new List<string>(), 90) { Groups = new[] { 2, 2, 2 } };
+    Check(Codec.TryDecode(Codec.Encode(bundle), out var bb) && bb is OfferMsg ob && ob.Groups.SequenceEqual(new[] { 2, 2, 2 })
+          && ob.ChoiceCount == 3 && ob.Packs().Count == 3 && ob.Packs()[2][1].Title == "Bash+", "bundle packs survive round trip");
+    var badGroups = bundle with { Groups = new[] { 5, 5 } };
+    Check(!Codec.TryDecode(Codec.Encode(badGroups), out _), "groups claiming more cards than sent are rejected");
+    Check(((OfferMsg)msgs[0]).ChoiceCount == 2 && ((OfferMsg)msgs[0]).Groups.Count == 0, "non-bundle offers have no groups");
 
     var wrongVersion = Codec.Encode(msgs[2]); wrongVersion[0] = 99;
     Check(!Codec.TryDecode(wrongVersion, out _), "version mismatch rejected");

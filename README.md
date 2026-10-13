@@ -12,13 +12,14 @@ A Slay the Spire 2 co-op mod. Players sit in a ring, and the player before you m
 | Smith upgrade: which card | **Picker**, but only after **you** choose Smith over Rest |
 | Attack / Skill / Power potion choice | **Picker** |
 | Toolbox-style relic choices at combat start | **Picker** |
+| Cards from Ancient gifts (Neow etc.): Scroll Boxes packs, Lost Coffer / Orrery / Glass Eye rewards, Hefty Tablet / Massive Scroll choices | **Picker**, after **you** choose the gift |
 | Card-effect choices (Discovery-style) | You (configurable) |
 | Combat turns, potion use, targeting | You |
 | Event options, event card rewards | You |
 | Chest relics, elite relics, gold, potion rewards | You |
 | Rest vs Smith, map path | You |
 
-With 2 players it's a swap. With 3–4 it's a ring in seat order (P1→P2→P3→P4→P1). Everyone picks for their neighbour at the same time, so nobody waits.
+With 2 players it's a swap. With 3–4 it's a ring in seat order (P1→P2→P3→P4→P1). Everyone picks for their neighbour at the same time, so nobody waits: when anyone opens a card reward after a fight, everyone else's card reward opens too, and each player chooses for their neighbour while their own waits.
 
 **Everyone in the lobby needs the mod.** It sets `affects_gameplay: true`.
 
@@ -71,8 +72,10 @@ tests/      dependency-free test runner for src/Core
   "DelegateSmith": true,
   "DelegatePotionChoices": true,
   "DelegateRelicChoices": true,
+  "DelegateAncientRewards": true,
   "DelegateCardEffectChoices": false,
   "DelegateUnknownCombatChoices": true,
+  "OpenAllCardRewards": true,
   "UseGameScreens": true,
   "ReverseRing": false,
   "TimeoutSeconds": 90,
@@ -89,6 +92,8 @@ Every game type, member, signal and Harmony target the mod uses was checked agai
 | Card reward | `NCardRewardSelectionScreen` |
 | Potion / Toolbox / Discovery "choose a card" | `NChooseACardSelectionScreen` |
 | Smith upgrade | `NDeckUpgradeSelectScreen` (only appears after Smith is chosen) |
+| Scroll Boxes packs | `NChooseABundleSelectionScreen` |
+| Opening everyone's card reward | `NRewardButton` on `NRewardsScreen` |
 | Shop removal | any `NCardGridSelectionScreen` opened by a removal the picker bought |
 | Shop | `NMerchantRoom.Instance.Inventory` while `IsOpen` |
 

@@ -12,10 +12,13 @@ public enum ScreenKind
     DeckGrid,
     /// <summary>The merchant's inventory is open.</summary>
     ShopInventory,
+    /// <summary>"Choose a pack": pick one of several bundles of cards (Scroll Boxes).</summary>
+    Bundle,
     Other,
 }
 
-public enum RoomKind { Other, Combat, Merchant, RestSite, Event, Treasure }
+/// <summary>Ancient is Neow and the other Ancients: an event room whose event is an Ancient.</summary>
+public enum RoomKind { Other, Combat, Merchant, RestSite, Event, Treasure, Ancient }
 
 /// <summary>What caused a generated card choice in combat.</summary>
 public enum ChoiceSource { Unknown, Potion, Relic, Card }
@@ -28,6 +31,8 @@ public enum DecisionKind : byte
     Shop = 4,
     /// <summary>The removal grid opened by a shop removal the picker already chose. Resolved locally, no network round trip.</summary>
     ShopRemovalPick = 5,
+    /// <summary>Choose one pack of cards out of several.</summary>
+    Bundle = 6,
 }
 
 public sealed class RulesConfig
@@ -38,11 +43,22 @@ public sealed class RulesConfig
     public bool DelegateShop { get; set; } = true;
     public bool DelegateSmith { get; set; } = true;
     public bool DelegatePotionChoices { get; set; } = true;
+    /// <summary>Card choices from relics: Toolbox at combat start, and Hefty Tablet / Massive Scroll / Scroll Boxes picked up at a shop or chest.</summary>
     public bool DelegateRelicChoices { get; set; } = true;
+    /// <summary>
+    /// The cards an Ancient's gift hands out (Neow and the act Ancients): card rewards from Lost Coffer / Orrery / Glass Eye,
+    /// choose-a-card from Hefty Tablet / Massive Scroll, packs from Scroll Boxes. The owner still chooses which gift to take.
+    /// </summary>
+    public bool DelegateAncientRewards { get; set; } = true;
     /// <summary>Choices created by playing a card (Discovery-style). Off by default: playing cards is the owner's turn.</summary>
     public bool DelegateCardEffectChoices { get; set; } = false;
     /// <summary>In-combat generated choices whose source could not be determined.</summary>
     public bool DelegateUnknownCombatChoices { get; set; } = true;
+    /// <summary>
+    /// When a neighbour opens a card reward, open this player's own card reward too, so everyone picks at once
+    /// instead of taking turns on the rewards screen.
+    /// </summary>
+    public bool OpenAllCardRewards { get; set; } = true;
     /// <summary>Show the picker the game's own card screens (real art) instead of the text list.</summary>
     public bool UseGameScreens { get; set; } = true;
     /// <summary>Picker clockwise vs counter-clockwise.</summary>
@@ -73,11 +89,16 @@ public static class DelegationRules
             case ScreenKind.CardReward:
                 if (!cfg.DelegateCardRewards) return null;
                 if (ctx.Room == RoomKind.Event && !cfg.DelegateEventCardRewards) return null;
+                if (ctx.Room == RoomKind.Ancient && !cfg.DelegateAncientRewards) return null;
                 return DecisionKind.CardReward;
 
+            case ScreenKind.Bundle:
+                return OutOfCombatRelicChoice(ctx.Room, cfg) ? DecisionKind.Bundle : null;
+
             case ScreenKind.GeneratedCardChoice:
-                // Outside combat these come from events, which stay with the owner.
-                if (ctx.Room != RoomKind.Combat) return null;
+                // Out of combat these come from a relic's pickup effect (or an event, which stays with the owner).
+                if (ctx.Room != RoomKind.Combat)
+                    return OutOfCombatRelicChoice(ctx.Room, cfg) ? DecisionKind.GeneratedCardChoice : null;
                 bool delegate_ = ctx.Source switch
                 {
                     ChoiceSource.Potion => cfg.DelegatePotionChoices,
@@ -102,6 +123,15 @@ public static class DelegationRules
                 return null;
         }
     }
+
+    /// <summary>Regular events stay with the owner; Ancients follow their own switch; anywhere else it's a relic someone picked up.</summary>
+    private static bool OutOfCombatRelicChoice(RoomKind room, RulesConfig cfg) => room switch
+    {
+        RoomKind.Event => false,
+        RoomKind.Ancient => cfg.DelegateAncientRewards,
+        RoomKind.Combat => false,
+        _ => cfg.DelegateRelicChoices,
+    };
 
     public static bool IsSmith(string? restOptionId) =>
         restOptionId is not null && restOptionId.Contains("SMITH", StringComparison.OrdinalIgnoreCase);

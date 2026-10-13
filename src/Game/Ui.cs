@@ -201,6 +201,7 @@ internal partial class PickerPanel : CanvasLayer
         Begin(o, o.TimeoutSeconds, ownerName);
         _title.Text = o.Kind switch
         {
+            DecisionKind.Bundle => $"Choose {ownerName}'s pack",
             DecisionKind.SmithUpgrade => $"Upgrade a card for {ownerName}",
             DecisionKind.GeneratedCardChoice => $"Choose {ownerName}'s card (mid-combat)",
             _ => $"Pick {ownerName}'s card reward",
@@ -215,11 +216,25 @@ internal partial class PickerPanel : CanvasLayer
             _list.AddChild(show);
         }
 
-        for (int i = 0; i < o.Options.Count; i++)
+        if (o.Kind == DecisionKind.Bundle)
         {
-            int index = i;
-            var c = o.Options[i];
-            _list.AddChild(Style.Button(c.Title, () => onPick(index), c.Description));
+            var packs = o.Packs();
+            for (int i = 0; i < packs.Count; i++)
+            {
+                int index = i;
+                var pack = packs[i];
+                _list.AddChild(Style.Button($"Pack {i + 1}: {string.Join(" · ", pack.Select(c => c.Title))}",
+                    () => onPick(index), string.Join("\n\n", pack.Select(c => $"{c.Title}: {c.Description}"))));
+            }
+        }
+        else
+        {
+            for (int i = 0; i < o.Options.Count; i++)
+            {
+                int index = i;
+                var c = o.Options[i];
+                _list.AddChild(Style.Button(c.Title, () => onPick(index), c.Description));
+            }
         }
         if (o.CanSkip)
             _footer.AddChild(Style.Button("Skip", () => onPick(-1)));
