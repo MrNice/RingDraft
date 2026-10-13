@@ -2,8 +2,12 @@ using System.Text;
 
 namespace RingDraft.Core;
 
-/// <summary>A card as shown to the picker. Id is the model's type name; Title/Description are display text from the owner's client.</summary>
-public sealed record CardView(string Id, string Title, string Description, int Upgrades);
+/// <summary>
+/// A card as shown to the picker. Id is the model's type name; Title/Description are display text from the owner's client.
+/// Blob is the game's own SerializableCard packet (base64), so the picker can rebuild the exact card,
+/// upgrades and enchantments included, and show it on the game's real screens. Empty when not needed.
+/// </summary>
+public sealed record CardView(string Id, string Title, string Description, int Upgrades, string Blob = "");
 
 public enum ShopItemType : byte { Card = 0, ColorlessCard = 1, Relic = 2, Potion = 3, CardRemoval = 4 }
 
@@ -55,9 +59,10 @@ public sealed record CancelMsg(uint RequestId, ulong From, ulong To, CancelReaso
 /// </summary>
 public static class Codec
 {
-    public const byte Version = 1;
+    public const byte Version = 2;
     private const int MaxList = 512;
     private const int MaxString = 4096;
+    private const int MaxBlob = 2048;
 
     private enum Tag : byte { Offer = 1, Pick = 2, ShopState = 3, ShopAction = 4, Cancel = 5 }
 
@@ -228,14 +233,26 @@ public static class Codec
     private static void Cards(BinaryWriter w, IReadOnlyList<CardView> cards)
     {
         Count(w, cards.Count);
-        foreach (var c in cards) { Str(w, c.Id); Str(w, c.Title); Str(w, c.Description); w.Write(c.Upgrades); }
+        foreach (var c in cards)
+        {
+            Str(w, c.Id); Str(w, c.Title); Str(w, c.Description); w.Write(c.Upgrades);
+            var blob = c.Blob ?? string.Empty;
+            if (blob.Length > MaxBlob) blob = string.Empty; // too big to be a real card; picker falls back to the text list
+            w.Write(blob);
+        }
     }
 
     private static List<CardView> ReadCards(BinaryReader r)
     {
         int n = ReadCount(r);
         var list = new List<CardView>(n);
-        for (int i = 0; i < n; i++) list.Add(new CardView(ReadStr(r), ReadStr(r), ReadStr(r), r.ReadInt32()));
+        for (int i = 0; i < n; i++)
+        {
+            var view = new CardView(ReadStr(r), ReadStr(r), ReadStr(r), r.ReadInt32());
+            var blob = r.ReadString();
+            if (blob.Length > MaxBlob) throw new FormatException("Card blob too long");
+            list.Add(view with { Blob = blob });
+        }
         return list;
     }
 

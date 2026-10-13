@@ -47,7 +47,7 @@ dotnet run --project tests\CoreTests
 
 ## How it works
 
-Authority never moves. When your card reward screen opens, your client covers it with a "Alex is picking your card reward…" panel and sends the options to your picker over the game's own co-op channel. The picker sees a window listing the cards (tooltips show text), your gold, relics, and deck. Their click comes back as a message; your client validates it (right request, right sender, in range) and then presses the card on your own screen. To the game it looks like you clicked, so vanilla sync, RNG, and saves are untouched.
+Authority never moves. When your card reward screen opens, your client covers it with a "Alex is picking your card reward…" panel and sends the options to your picker over the game's own co-op channel. The picker sees the game's own card reward, choose-a-card, or Smith screen, filled with exact copies of your cards (upgrades and enchantments included) and titled "Choose for <you>". Out of combat it opens automatically; in combat it waits for the picker to press **Show the cards**, so a teammate's potion never interrupts their turn. A side panel also lists the options as text, with your gold, relics, and deck, as a fallback. Their click comes back as a message; your client validates it (right request, right sender, in range) and then presses the card on your own screen. To the game it looks like you clicked, so vanilla sync, RNG, and saves are untouched.
 
 The shop works the same way, but it stays open for repeated actions. Each purchase runs through your merchant entry on your client, and a fresh shop state goes back to the picker. **Done shopping** returns control to you.
 
@@ -73,6 +73,7 @@ tests/      dependency-free test runner for src/Core
   "DelegateRelicChoices": true,
   "DelegateCardEffectChoices": false,
   "DelegateUnknownCombatChoices": true,
+  "UseGameScreens": true,
   "ReverseRing": false,
   "TimeoutSeconds": 90,
   "CombatTimeoutSeconds": 30
@@ -97,7 +98,7 @@ What hasn't been exercised is the live game. Expect to tune behavior on the firs
 
 ## Known gaps
 
-- Cards in the picker window are text buttons, not rendered cards. The code to render real card art exists in `sts2_typing`'s `ChatPanel` (`card_hover_tip.tscn`).
+- The shop is still a text panel for the picker; the real merchant screen is the next stage.
 - Controller input on the owner's blocked screen is mostly, not completely, swallowed.
 - If the same card appears twice in your deck, shop removal picks the first matching copy (by name and upgrade level).
 - Reopening the merchant starts a new shopping trip for the picker.

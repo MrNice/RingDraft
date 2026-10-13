@@ -101,17 +101,25 @@ internal static class GameQuery
         Me()?.Relics.Select(r => Text(() => r.Title.GetFormattedText())).Where(s => s.Length > 0).ToList()
         ?? new List<string>();
 
-    public static CardView View(CardModel? card)
+    /// <param name="withCardData">Include the game's serialized card so the picker can show the real card.</param>
+    public static CardView View(CardModel? card, bool withCardData = false)
     {
         if (card is null) return new CardView("", "?", "", 0);
         return new CardView(
             card.GetType().FullName ?? card.GetType().Name,
             Text(() => card.Title),
             Text(() => card.Description.GetFormattedText(), () => card.Description.GetRawText()),
-            card.CurrentUpgradeLevel);
+            card.CurrentUpgradeLevel,
+            withCardData ? CardCodec.Serialize(card) : "");
     }
 
-    public static List<CardView> MyDeckViews() => MyDeck().Select(View).ToList();
+    public static Player? PlayerById(ulong netId)
+    {
+        try { return RunManager.Instance?.DebugOnlyGetState()?.Players.FirstOrDefault(p => p.NetId == netId); }
+        catch { return null; }
+    }
+
+    public static List<CardView> MyDeckViews() => MyDeck().Select(c => View(c)).ToList();
 
     /// <summary>The local player's merchant stock, as shown in the open shop.</summary>
     public static MerchantInventory? MyInventory()
@@ -215,7 +223,7 @@ internal static class UiDriver
             : Nodes.FindAll<NCardHolder>(screen);
 
     public static List<CardView> Options(Node screen) =>
-        Holders(screen).Select(h => GameQuery.View(h.CardModel)).ToList();
+        Holders(screen).Select(h => GameQuery.View(h.CardModel, withCardData: true)).ToList();
 
     /// <summary>Some selection screens finish setting up a frame or two after they appear.</summary>
     public static bool IsReady(Node screen)

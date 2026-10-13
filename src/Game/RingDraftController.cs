@@ -40,6 +40,11 @@ internal partial class RingDraftController : Node
     private double _pendingRemovalSince;
     private bool _wasInCombat;
 
+    // Picker side: the game screen open for a neighbour's offer, and offers already auto-opened once.
+    private (Envelope Offer, NativeScreens.Open Screen)? _native;
+    private readonly HashSet<(ulong, uint)> _autoOpened = new();
+    private readonly HashSet<ulong> _pickerScreens = new();
+
     public override void _Ready()
     {
         Name = "RingDraft";
@@ -88,6 +93,9 @@ internal partial class RingDraftController : Node
         _active = null;
         _handled.Clear();
         _jobs.Clear();
+        CloseNative();
+        _autoOpened.Clear();
+        _pickerScreens.Clear();
         _panel?.HideAll();
         _ledger = null;
         _inbox = null;
@@ -121,6 +129,7 @@ internal partial class RingDraftController : Node
         }
 
         _handled.RemoveWhere(id => GodotObject.InstanceFromId(id) is null);
+        _pickerScreens.RemoveWhere(id => GodotObject.InstanceFromId(id) is null);
     }
 
     // ---------------------------------------------------------------- network
@@ -147,8 +156,12 @@ internal partial class RingDraftController : Node
     {
         if (_ledger is null) return;
 
+        // Screens this player opened while picking for a neighbour are not this player's own decisions.
+        var top = GameQuery.TopOverlay();
+        bool pickerScreenOnTop = top is not null && _pickerScreens.Contains(top.GetInstanceId());
+
         // A removal the picker already chose: resolve the grid it opens, no round trip.
-        if (_pendingRemoval is not null
+        if (_pendingRemoval is not null && !pickerScreenOnTop
             && GameQuery.Classify(GameQuery.TopOverlay(), out var grid, out _) == ScreenKind.DeckGrid
             && grid is not null && !_handled.Contains(grid.GetInstanceId()) && UiDriver.IsReady(grid))
         {
@@ -172,6 +185,7 @@ internal partial class RingDraftController : Node
             _active = null;
         }
         _ledger.Prune();
+        if (pickerScreenOnTop) return;
 
         var kindOfScreen = GameQuery.Classify(GameQuery.TopOverlay(), out var screen, out bool isUpgradeGrid);
         if (screen is null) return;
@@ -357,22 +371,31 @@ internal partial class RingDraftController : Node
     private void PickerStep()
     {
         var current = _inbox?.Current;
+
+        // The offer behind an open game screen was cancelled or replaced: take the screen down.
+        if (_native is { } open && !ReferenceEquals(open.Offer, current)) CloseNative();
+
         if (current is null)
         {
             if (_panel.Shown is not null) _panel.HideAll();
             return;
         }
+
+        if (current is OfferMsg offer && _native is null && ShouldAutoOpen(offer))
+        {
+            _autoOpened.Add((offer.From, offer.RequestId));
+            OpenNative(offer);
+        }
+        _panel.SetSuppressed(_native is not null);
         if (ReferenceEquals(_panel.Shown, current)) return;
 
         string owner = _net.NameOf(current.From);
         switch (current)
         {
             case OfferMsg o:
-                _panel.ShowOffer(o, owner, index =>
-                {
-                    _net.Send(new PickMsg(o.RequestId, _me, o.From, index));
-                    _inbox?.Complete(o.From, o.RequestId);
-                });
+                _panel.ShowOffer(o, owner,
+                    index => SendPick(o, index),
+                    NativeScreens.Supports(o) ? () => OpenNative(o) : null);
                 break;
 
             case ShopStateMsg s:
@@ -384,6 +407,76 @@ internal partial class RingDraftController : Node
                 });
                 break;
         }
+    }
+
+    /// <summary>
+    /// Out of combat the real screen opens by itself. In combat it waits for the picker to press
+    /// "Show the cards", so a teammate's potion never interrupts the picker's own turn.
+    /// </summary>
+    private bool ShouldAutoOpen(OfferMsg o) =>
+        Config.Rules.UseGameScreens
+        && NativeScreens.Supports(o)
+        && !GameQuery.InCombat()
+        && !_autoOpened.Contains((o.From, o.RequestId));
+
+    private void OpenNative(OfferMsg o)
+    {
+        if (_native is not null) return;
+        NativeScreens.Open? open = null;
+        try { open = NativeScreens.Show(o, _net.NameOf(o.From)); }
+        catch (Exception ex) { Log.Error($"Opening the game screen for #{o.RequestId} failed", ex); }
+
+        if (open is null)
+        {
+            Log.Warn($"Couldn't show the real cards for #{o.RequestId}; using the list instead");
+            _panel.SetSuppressed(false);
+            return;
+        }
+
+        _native = (o, open);
+        _pickerScreens.Add(open.Screen.GetInstanceId());
+        _panel.SetSuppressed(true);
+        _ = AwaitNative(o, open);
+        Log.Info($"Opened the game's {o.Kind} screen for {_net.NameOf(o.From)} (#{o.RequestId})");
+    }
+
+    private async Task AwaitNative(OfferMsg o, NativeScreens.Open open)
+    {
+        int? index;
+        try { index = await open.Result; }
+        catch (Exception ex) { Log.Error($"Game screen for #{o.RequestId} failed", ex); index = null; }
+
+        if (_native is not { } still || !ReferenceEquals(still.Offer, o)) return; // closed or superseded meanwhile
+        _native = null;
+        _panel.SetSuppressed(false);
+
+        if (index is null)
+        {
+            Log.Info($"Closed the {o.Kind} screen for #{o.RequestId} without choosing; the list is still there");
+            return;
+        }
+        SendPick(o, index.Value);
+    }
+
+    private void CloseNative()
+    {
+        if (_native is not { } open) return;
+        _native = null;
+        NativeScreens.Close(open.Screen.Screen);
+        _panel?.SetSuppressed(false);
+    }
+
+    private void SendPick(OfferMsg o, int index)
+    {
+        if (_inbox is null || !_inbox.Has(o.From, o.RequestId))
+        {
+            Log.Info($"Pick for #{o.RequestId} dropped: the offer was already withdrawn");
+            return;
+        }
+        _net.Send(new PickMsg(o.RequestId, _me, o.From, index));
+        _inbox?.Complete(o.From, o.RequestId);
+        if (_native is { } open && ReferenceEquals(open.Offer, o)) CloseNative();
+        Log.Info($"Picked option {index} for {_net.NameOf(o.From)} (#{o.RequestId})");
     }
 
     // ---------------------------------------------------------------- small scheduler

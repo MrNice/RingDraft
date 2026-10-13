@@ -43,6 +43,8 @@ public sealed class RulesConfig
     public bool DelegateCardEffectChoices { get; set; } = false;
     /// <summary>In-combat generated choices whose source could not be determined.</summary>
     public bool DelegateUnknownCombatChoices { get; set; } = true;
+    /// <summary>Show the picker the game's own card screens (real art) instead of the text list.</summary>
+    public bool UseGameScreens { get; set; } = true;
     /// <summary>Picker clockwise vs counter-clockwise.</summary>
     public bool ReverseRing { get; set; } = false;
     /// <summary>After this long the owner gets a "choose myself" button.</summary>

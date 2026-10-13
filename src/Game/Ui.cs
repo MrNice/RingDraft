@@ -123,6 +123,7 @@ internal partial class PickerPanel : CanvasLayer
     private Button _minimize = null!;
     private Label _timer = null!;
     private bool _minimized;
+    private bool _suppressed;
     private bool _deckOpen;
     private string _ownerName = "";
     private double _shownAt;
@@ -194,7 +195,8 @@ internal partial class PickerPanel : CanvasLayer
         _timer.Text = left > 0 ? $"They can take the choice back in {Math.Ceiling(left)}s" : "They can take the choice back now";
     }
 
-    public void ShowOffer(OfferMsg o, string ownerName, Action<int> onPick)
+    /// <param name="onShowCards">Opens the game's own screen with the real cards; null when that isn't possible.</param>
+    public void ShowOffer(OfferMsg o, string ownerName, Action<int> onPick, Action? onShowCards = null)
     {
         Begin(o, o.TimeoutSeconds, ownerName);
         _title.Text = o.Kind switch
@@ -204,6 +206,14 @@ internal partial class PickerPanel : CanvasLayer
             _ => $"Pick {ownerName}'s card reward",
         };
         _subtitle.Text = $"{o.Gold} gold" + (o.Relics.Count > 0 ? $" · Relics: {string.Join(", ", o.Relics)}" : "");
+
+        if (onShowCards is not null)
+        {
+            var show = Style.Button("Show the cards", onShowCards, "Open the game's card screen");
+            show.Alignment = HorizontalAlignment.Center;
+            show.AddThemeColorOverride("font_color", Style.Accent);
+            _list.AddChild(show);
+        }
 
         for (int i = 0; i < o.Options.Count; i++)
         {
@@ -261,6 +271,14 @@ internal partial class PickerPanel : CanvasLayer
         if (_panel is not null) _panel.Visible = false;
     }
 
+    /// <summary>Hides the panel while the game's own screen is open, without forgetting what it shows.</summary>
+    public void SetSuppressed(bool suppressed)
+    {
+        if (_suppressed == suppressed) return;
+        _suppressed = suppressed;
+        if (_panel is not null) _panel.Visible = Shown is not null && !suppressed;
+    }
+
     private void ShowRemoval(ShopStateMsg s, ShopItemView removal, Action<ShopActionType, int, int> onAction)
     {
         ClearLists();
@@ -305,7 +323,7 @@ internal partial class PickerPanel : CanvasLayer
 
     private void Reveal()
     {
-        _panel.Visible = true;
+        _panel.Visible = !_suppressed;
         ApplyMinimized();
         if (!_minimized && _list.GetChildCount() > 0 && _list.GetChild(0) is Control first)
             first.CallDeferred(Control.MethodName.GrabFocus);

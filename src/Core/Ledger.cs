@@ -196,6 +196,8 @@ public sealed class PickerInbox
         }
     }
 
+    public bool Has(ulong owner, uint requestId) => _items.Any(x => x.From == owner && x.RequestId == requestId);
+
     /// <summary>Called once the picker has answered (or pressed Done in a shop).</summary>
     public void Complete(ulong owner, uint requestId) =>
         _items.RemoveAll(x => x.From == owner && x.RequestId == requestId);

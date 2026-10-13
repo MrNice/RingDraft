@@ -79,7 +79,7 @@ const ulong A = 101, B = 202, C = 303, D = 404;
 
 // ---------- Codec ----------
 {
-    var deck = new List<CardView> { new("MegaCrit.Sts2.Cards.Strike", "Strike", "Deal 6 damage.", 0), new("MegaCrit.Sts2.Cards.Bash", "Bash+", "Deal 10 damage. Apply 3 Vulnerable.", 1) };
+    var deck = new List<CardView> { new("MegaCrit.Sts2.Cards.Strike", "Strike", "Deal 6 damage.", 0, "AQIDBA=="), new("MegaCrit.Sts2.Cards.Bash", "Bash+", "Deal 10 damage. Apply 3 Vulnerable.", 1) };
     var msgs = new Envelope[]
     {
         new OfferMsg(7, A, B, DecisionKind.CardReward, deck, true, deck, 123, new List<string> { "Burning Blood" }, 90),
@@ -115,6 +115,9 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Codec.TryDecode(Codec.Encode(o), out var e0);
     var o2 = (OfferMsg)e0!;
     Check(o2.Options[1] == o.Options[1] && o2.Gold == 123 && o2.Relics[0] == "Burning Blood" && o2.CanSkip, "offer fields survive");
+    Check(o2.Options[0].Blob == "AQIDBA==" && o2.Options[1].Blob == "", "card blobs survive (present and absent)");
+    var huge = new OfferMsg(1, A, B, DecisionKind.CardReward, new List<CardView> { deck[0] with { Blob = new string('A', 5000) } }, false, new List<CardView>(), 0, new List<string>(), 1);
+    Check(Codec.TryDecode(Codec.Encode(huge), out var hugeBack) && ((OfferMsg)hugeBack!).Options[0].Blob == "", "oversized blob dropped on encode, not sent");
 
     var wrongVersion = Codec.Encode(msgs[2]); wrongVersion[0] = 99;
     Check(!Codec.TryDecode(wrongVersion, out _), "version mismatch rejected");
@@ -208,6 +211,7 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Check(!inbox.Receive(offer with { To = C }, B), "not for me ignored");
     Check(!inbox.Receive(offer, C), "spoofed owner ignored");
     Check(inbox.Receive(offer, B) && inbox.Count == 1, "offer queued");
+    Check(inbox.Has(B, 1) && !inbox.Has(B, 2) && !inbox.Has(C, 1), "Has matches owner and request");
     Check(!inbox.Receive(offer, B) && inbox.Count == 1, "duplicate offer ignored");
 
     var offer2 = offer with { From = D, RequestId = 1 };
