@@ -39,13 +39,17 @@ internal sealed class MimicShop
     public uint RequestId { get; }
     public NMerchantInventory Node { get; }
     public MerchantInventory Inventory { get; }
+    /// <summary>The owner's gold and potion belt over the rug, if they could be shown.</summary>
+    public MimicPurse? Purse => _purse;
 
     private readonly Actions _actions;
     private readonly Player _owner;
     private readonly string _ownerName;
     private readonly Dictionary<int, MerchantEntry> _slots;
     private readonly Label _header;
+    private MimicPurse? _purse;
     private ShopStateMsg _state;
+    private (int Index, string Id, string Title)? _pendingBuy;
     private double _busyUntil;
     private bool _closing;
     private Node? _removalScreen;
@@ -103,6 +107,9 @@ internal sealed class MimicShop
         node.AddChild(header);
 
         var shop = new MimicShop(s, owner, ownerName, node, inventory, slots, header, actions);
+        try { shop._purse = MimicPurse.Create(node, owner); }
+        catch (Exception ex) { Log.Error("Showing the owner's gold and potions failed", ex); }
+        header.Visible = shop._purse is null; // the owner's purse in the top bar replaces the text header; it's the fallback
         Current = shop;
         node.Connect(NMerchantInventory.SignalName.InventoryClosed, Callable.From(shop.OnInventoryClosed));
         node.Open();
@@ -120,6 +127,22 @@ internal sealed class MimicShop
         if (s.From != Owner || s.RequestId != RequestId) return false;
         if (s.Items.Count != _slots.Count || s.Items.Any(i => !_slots.ContainsKey(i.Index))) return false;
 
+        // A purchase the owner's game refused (not enough gold, no empty potion slot): the item is still there.
+        (MerchantEntry Entry, PurchaseStatus Status)? refusal = null;
+        if (_pendingBuy is { } pending)
+        {
+            _pendingBuy = null;
+            var again = s.Items.FirstOrDefault(i => i.Index == pending.Index);
+            if (again is { Stocked: true } && again.Id == pending.Id && again.Title == pending.Title && _slots.TryGetValue(pending.Index, out var refused))
+            {
+                var status = PurchaseStatus.FailureForbidden;
+                if (refused is MerchantPotionEntry && !_owner.HasOpenPotionSlots) status = PurchaseStatus.FailureSpace;
+                else if (!again.Affordable) status = PurchaseStatus.FailureGold;
+                refusal = (refused, status);
+                Log.Info($"{_ownerName}'s game refused {pending.Title} ({status})");
+            }
+        }
+
         bool removalUsedNow = false;
         foreach (var item in s.Items)
         {
@@ -130,6 +153,12 @@ internal sealed class MimicShop
             EntryUpdated(entry);
         }
         if (removalUsedNow) Call(Node, "OnCardRemovalUsed");
+        // The item is back in its slot; now the game's own "can't buy that" reaction on it.
+        if (refusal is { } r)
+        {
+            Failed(r.Entry, r.Status);
+            if (r.Status == PurchaseStatus.FailureSpace) _purse?.PotionsFull();
+        }
 
         _state = s;
         _busyUntil = 0;
@@ -144,6 +173,7 @@ internal sealed class MimicShop
         _closing = true;
         if (Current == this) Current = null;
         if (_removalScreen is not null) NativeScreens.Close(_removalScreen);
+        _purse?.AnimateOut();
         try
         {
             if (Nodes.Alive(Node))
@@ -167,8 +197,22 @@ internal sealed class MimicShop
         if (!_slots.TryGetValue(index, out var found) || !ReferenceEquals(found, entry)) return Task.FromResult(false);
         if (SourceTracker.Now() < _busyUntil || _removalScreen is not null) return Task.FromResult(false);
 
+        var view = _state.Items.FirstOrDefault(i => i.Index == index);
         if (!entry.IsStocked) { Failed(entry, PurchaseStatus.FailureOutOfStock); return Task.FromResult(false); }
-        if (!entry.EnoughGold) { Failed(entry, PurchaseStatus.FailureGold); return Task.FromResult(false); }
+        // Both checks: this client's copy of the owner's gold, and the owner's own verdict from their last update.
+        if (!entry.EnoughGold || view is { Affordable: false })
+        {
+            Failed(entry, PurchaseStatus.FailureGold);
+            UpdateHeader($"{_ownerName} can't afford that.");
+            return Task.FromResult(false);
+        }
+        if (entry is MerchantPotionEntry && !_owner.HasOpenPotionSlots)
+        {
+            Failed(entry, PurchaseStatus.FailureSpace);
+            _purse?.PotionsFull();
+            UpdateHeader($"{_ownerName}'s potion belt is full.");
+            return Task.FromResult(false);
+        }
 
         if (entry is MerchantCardRemovalEntry)
         {
@@ -177,8 +221,8 @@ internal sealed class MimicShop
         }
 
         _busyUntil = SourceTracker.Now() + 5;
-        var view = _state.Items.FirstOrDefault(i => i.Index == index);
         UpdateHeader(view is null ? "" : $"Buying {view.Title}…");
+        if (view is not null) _pendingBuy = (index, view.Id, view.Title);
         _actions.Buy(index);
 
         // Show the purchase the way the game does, but flying to the owner's row in the player list.
@@ -256,6 +300,7 @@ internal sealed class MimicShop
 
     private void UpdateHeader(string notice = "")
     {
+        if (_purse is not null) return; // the owner's coin, gold and belt in the top bar say whose shop this is
         string text = $"Shopping for {_ownerName} · {_owner.Gold} gold (theirs)";
         if (!string.IsNullOrEmpty(notice)) text += $"\n{notice}";
         _header.Text = text;
@@ -481,8 +526,10 @@ internal static class MimicFly
             };
             var info = field is null ? null : slot!.GetType().GetField(field, BindingFlags.Instance | BindingFlags.NonPublic);
             if (info?.GetValue(slot) is not CanvasItem visual || !Nodes.Alive(visual)) return;
+            // Potions fly into the owner's belt over the rug; everything else into their row in the player list.
+            Vector2? target = slot is NMerchantPotion ? shop.Purse?.NextPotionSlot() : null;
             // Take the icon out of the slot so the slot's own refresh doesn't free it mid-flight.
-            if (Fly(visual, shop.Owner))
+            if (Fly(visual, shop.Owner, target))
             {
                 info.SetValue(slot, null);
                 AccessTools.Method(typeof(NMerchantSlot), "ClearHoverTip")?.Invoke(slot, null);
@@ -495,19 +542,29 @@ internal static class MimicFly
     /// Lifts a card, relic or potion node off its screen and sends it, shrinking, into the owner's row in the
     /// player list. Returns false (and leaves the node alone) if there is no row to fly to.
     /// </summary>
-    public static bool Fly(CanvasItem visual, ulong owner)
+    public static bool Fly(CanvasItem visual, ulong owner, Vector2? to = null)
     {
         try
         {
             if (!Nodes.Alive(visual) || visual.GetTree() is not { } tree) return false;
             var row = Nodes.FindAll<NMultiplayerPlayerState>(tree.Root).FirstOrDefault(r => r.Player?.NetId == owner && r.IsVisibleInTree());
-            if (row is null) return false;
+            if (row is null && to is null) return false;
 
-            if (visual is NCard card) return FlyCard(card, owner, row);
+            if (visual is NCard card && row is not null) return FlyCard(card, owner, row);
 
             var start = visual.GetGlobalTransformWithCanvas();
-            var rowXf = row.GetGlobalTransformWithCanvas();
-            var target = rowXf.Origin + row.Size * rowXf.Scale * new Vector2(0.25f, 0.5f);
+            Vector2 target;
+            if (to is { } point)
+            {
+                // Aim the icon's centre at the point (the icon is positioned by its top-left corner).
+                var half = visual is Control vc ? vc.Size * start.Scale * 0.5f : Vector2.Zero;
+                target = point - half * 0.6f;
+            }
+            else
+            {
+                var rowXf = row!.GetGlobalTransformWithCanvas();
+                target = rowXf.Origin + row.Size * rowXf.Scale * new Vector2(0.25f, 0.5f);
+            }
 
             if (_layer is null || !Nodes.Alive(_layer))
             {
@@ -521,12 +578,13 @@ internal static class MimicFly
 
             var done = new TaskCompletionSource();
             Landing[owner] = done.Task;
-            float endScale = visual is Node2D ? 0.12f : 0.45f; // cards are Node2D and large; relic/potion icons are small Controls
+            // Cards are Node2D and large; relic/potion icons are small Controls. Into the belt, a potion stays potion-sized.
+            float endScale = to is not null ? 0.6f : visual is Node2D ? 0.12f : 0.45f;
             var tween = visual.CreateTween();
             tween.SetParallel();
             tween.TweenProperty(visual, "global_position", target, 0.6).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
             tween.TweenProperty(visual, "scale", start.Scale * endScale, 0.6).SetTrans(Tween.TransitionType.Cubic).SetEase(Tween.EaseType.In);
-            tween.TweenProperty(visual, "modulate:a", 0.0f, 0.15).SetDelay(0.5);
+            tween.TweenProperty(visual, "modulate:a", 0.0f, 0.15).SetDelay(to is not null ? 0.55 : 0.5);
             tween.Chain().TweenCallback(Callable.From(() =>
             {
                 done.TrySetResult();

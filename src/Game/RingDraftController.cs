@@ -1,4 +1,5 @@
 using Godot;
+using MegaCrit.Sts2.Core.Entities.Merchant;
 using RingDraft.Core;
 
 namespace RingDraft;
@@ -372,8 +373,8 @@ internal partial class RingDraftController : Node
             case ShopActionType.Buy:
             {
                 var (view, entry) = entries.First(e => e.View.Index == msg.ItemIndex);
-                if (inventory is not null && GameQuery.Purchase(entry, inventory, view.Title)) After(0.6, () => SendShopState($"Bought {view.Title}."));
-                else SendShopState($"Couldn't buy {view.Title}.");
+                if (inventory is null) SendShopState($"Couldn't buy {view.Title}.");
+                else _ = BuyForPicker(entry, inventory, view.Title, msg.RequestId);
                 break;
             }
 
@@ -390,6 +391,25 @@ internal partial class RingDraftController : Node
                 break;
             }
         }
+    }
+
+    /// <summary>Buys what the picker chose and tells them how it went, including when the game says no.</summary>
+    private async Task BuyForPicker(MerchantEntry entry, MerchantInventory inventory, string title, uint requestId)
+    {
+        var failure = await GameQuery.PurchaseResult(entry, inventory, title);
+        if (_active?.Decision.RequestId != requestId) return;
+        if (failure is null)
+        {
+            After(0.6, () => SendShopState($"Bought {title}."));
+            return;
+        }
+        SendShopState(failure switch
+        {
+            PurchaseStatus.FailureGold => $"Couldn't buy {title}: not enough gold.",
+            PurchaseStatus.FailureSpace => $"Couldn't buy {title}: no empty potion slot.",
+            PurchaseStatus.FailureOutOfStock => $"Couldn't buy {title}: sold out.",
+            _ => $"Couldn't buy {title}.",
+        });
     }
 
     private void ResolveRemoval(Node grid)

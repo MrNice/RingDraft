@@ -1,0 +1,13 @@
+0.3.1
+- Shop: when you shop for someone, their gold and potion belt now sit in your top bar right after yours, with their coin in their character's colour. Their gold counts down when you spend it, just like yours does.
+- Potions you buy for them fly into their potion belt.
+- Fixed: buying a potion when their belt was full (or they couldn't afford it) looked like it worked, but they never got it. The shop now refuses it the way the game does, and if their game says no, the item goes back on the shelf.
+- When the shop closes, the second rug, their gold and their potions all slide away together.
+- Everyone in the lobby needs 0.3.1.
+
+0.3.1（简体中文）
+- 商店：替别人购物时，对方的金币和药水栏会显示在你的顶部栏里，紧挨在你自己的后面，金币图标会染成对方角色的颜色。花对方的钱时，对方的金币数会像你自己的一样滚动减少。
+- 替对方买的药水会飞进对方的药水栏。
+- 修复：对方药水栏已满（或金币不够）时买药水，看起来像是买成了，对方却没有拿到。现在商店会像游戏原本那样拒绝购买；如果对方的游戏拒绝了这次购买，商品会回到货架上。
+- 关闭商店时，第二张商人地毯、对方的金币和药水栏会一起收起。
+- 房间里的所有人都需要更新到 0.3.1。

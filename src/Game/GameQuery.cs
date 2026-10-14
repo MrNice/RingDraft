@@ -262,6 +262,30 @@ internal static class GameQuery
         }
     }
 
+    /// <summary>
+    /// Buys through the merchant exactly as clicking the slot would, and reports how it went: null on success,
+    /// otherwise why the game refused (not enough gold, no empty potion slot, ...).
+    /// </summary>
+    public static async Task<PurchaseStatus?> PurchaseResult(MerchantEntry entry, MerchantInventory inventory, string label)
+    {
+        PurchaseStatus? failure = null;
+        void OnFailed(PurchaseStatus status) => failure = status;
+        entry.PurchaseFailed += OnFailed;
+        try
+        {
+            bool ok = await entry.OnTryPurchaseWrapper(inventory);
+            if (ok) return null;
+            Log.Warn($"Purchase of {label} was refused by the game ({failure?.ToString() ?? "no reason given"})");
+            return failure ?? PurchaseStatus.FailureForbidden;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Purchase of {label} failed", ex);
+            return PurchaseStatus.FailureForbidden;
+        }
+        finally { entry.PurchaseFailed -= OnFailed; }
+    }
+
     /// <summary>Display text, with BBCode stripped; tries each source until one yields text.</summary>
     private static string Text(params Func<string?>[] sources)
     {

@@ -10,3 +10,4 @@ workshop/content/
 mod-uploader.log
 tools/
 push-log.txt
+.sync/
