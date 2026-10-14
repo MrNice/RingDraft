@@ -1,8 +1,9 @@
 namespace RingDraft.Core;
 
 /// <summary>
-/// The words on PvP end screens (the winner gets the game's own Victory, with nothing under it):
+/// The words on PvP end screens:
 /// <list type="bullet">
+/// <item>last one standing: the game's own Victory banner and a WinQuote;</item>
 /// <item>fell together on the last turn, nobody left: TieBanner and a TieQuote;</item>
 /// <item>fell on an earlier turn, then the rest tied: the game's own Defeat banner and a NearTieQuote;</item>
 /// <item>fell while someone else went on to win: the game's own Defeat banner and a LossQuote.</item>
@@ -12,7 +13,7 @@ namespace RingDraft.Core;
 public static class PvpText
 {
     public sealed record Lines(string TieBanner, IReadOnlyList<string> TieQuotes, IReadOnlyList<string> NearTieQuotes,
-        IReadOnlyList<string> LossQuotes);
+        IReadOnlyList<string> LossQuotes, IReadOnlyList<string> WinQuotes);
 
     public static readonly Lines English = new("Tie - No Winner", new[]
     {
@@ -44,6 +45,16 @@ public static class PvpText
         "Should have been nicer to your picker.",
         "Sabotaged, and you never saw it coming.",
         "The last one standing wasn't you.",
+    }, new[]
+    {
+        "Last one standing. Your friends will remember this.",
+        "Victory, built on the ruins of your friends' decks.",
+        "You drafted their doom. Well done.",
+        "Ruthless, cunning, and still breathing.",
+        "Friendship is temporary. Victory is forever.",
+        "They trusted you with their cards. Their mistake.",
+        "The Spire bows to its pettiest climber.",
+        "Survived the Spire and your friends' worst picks.",
     });
 
     public static readonly Lines SimplifiedChinese = new("平局 - 无人获胜", new[]
@@ -76,6 +87,16 @@ public static class PvpText
         "早该对帮你选牌的人好一点。",
         "被人暗算了，你却浑然不觉。",
         "最后站着的人，不是你。",
+    }, new[]
+    {
+        "最后一个站着的人。你的朋友会记住这一刻的。",
+        "胜利，建立在朋友们牌组的废墟之上。",
+        "你亲手为他们选好了末路。干得漂亮。",
+        "冷酷、狡猾，而且还活着。",
+        "友谊是暂时的，胜利是永恒的。",
+        "他们把牌交给了你，这是他们的错。",
+        "尖塔向它最记仇的攀登者低头。",
+        "熬过了尖塔，也熬过了朋友们最狠的选牌。",
     });
 
     /// <param name="language">The game's language code, e.g. "eng" or "zhs".</param>

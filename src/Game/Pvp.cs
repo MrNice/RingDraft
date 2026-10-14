@@ -279,7 +279,7 @@ internal static class Pvp
     }
 
     /// <summary>
-    /// The end screen of a PvP run: the winner's says Victory, with no death quote and nothing about the Architect; a
+    /// The end screen of a PvP run: the winner's says Victory, with a gloat and nothing about the Architect; a
     /// tie (everyone fell on the same turn) says so, with a dig at everyone involved; anyone who fell a turn before the
     /// tie, or lost to the winner, keeps the game's Defeat banner with a dig of their own (see <see cref="PvpText"/>).
     /// </summary>
@@ -309,7 +309,7 @@ internal static class Pvp
     private static void DressVictory(Traverse t)
     {
         if (t.Field("_history").GetValue() is RunHistory history) Traverse.Create(history).Property("Win").SetValue(true); // the screen's own copy
-        SetBannerAndQuote(t, new LocString("game_over_screen", "BANNER.trueWin").GetRawText(), "");
+        SetBannerAndQuote(t, new LocString("game_over_screen", "BANNER.trueWin").GetRawText(), Any(Text().WinQuotes));
         if (t.Field("_victoryDamageLabel").GetValue() is MegaRichTextLabel damage) damage.Text = "";
     }
 

@@ -359,7 +359,7 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     Check(PvpText.For("zhs") == PvpText.SimplifiedChinese && PvpText.For("eng") == PvpText.English, "tie text by language");
     Check(PvpText.For("fra") == PvpText.English && PvpText.For(null) == PvpText.English, "other languages get English");
     foreach (var (name, pick) in new (string, Func<PvpText.Lines, IReadOnlyList<string>>)[]
-             { ("tie", l => l.TieQuotes), ("near-tie", l => l.NearTieQuotes), ("loss", l => l.LossQuotes) })
+             { ("tie", l => l.TieQuotes), ("near-tie", l => l.NearTieQuotes), ("loss", l => l.LossQuotes), ("win", l => l.WinQuotes) })
     {
         var en = pick(PvpText.English);
         var zh = pick(PvpText.SimplifiedChinese);
