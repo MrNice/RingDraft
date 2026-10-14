@@ -1,0 +1,9 @@
+0.4.1
+- Supports the Slay the Spire 2 beta branch (v0.111.0) as well as the main branch (v0.107.1). The same version works on both, so there's nothing extra to install for the beta.
+- Fixed on the beta: the mod failing to load, a PvP match not stopping the fight when it ends, and spotting a player who leaves a PvP match.
+- 0.4.0 and 0.4.1 can play together.
+
+0.4.1（简体中文）
+- 支持《杀戮尖塔2》测试版分支（v0.111.0），同时继续支持正式版（v0.107.1）。同一个版本在两个分支上都能用，测试版无需另外安装。
+- 测试版上的修复：模组无法加载；PvP 对局结束时战斗没有停止；无法识别中途离开 PvP 对局的玩家。
+- 0.4.0 和 0.4.1 可以一起联机。

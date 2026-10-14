@@ -111,7 +111,7 @@ internal static class Pvp
             if (_lossPending && CombatManager.Instance is { IsAboutToLose: true } cm)
             {
                 _lossPending = false;
-                try { AccessTools.Method(typeof(CombatManager), "ProcessPendingLoss")?.Invoke(cm, null); }
+                try { ProcessPendingLoss(cm); }
                 catch (Exception ex) { Log.Warn($"Stopping the fight failed: {ex.Message}"); }
             }
             return;
@@ -140,6 +140,20 @@ internal static class Pvp
         _settlingSince ??= now;
         if (now - _settlingSince < SettleSeconds) return;
         Decide("last one standing");
+    }
+
+    /// <summary>
+    /// The game's own "the fight is lost" step. Game v0.107 takes no arguments; the v0.111 beta keeps combat state in
+    /// a turn-state object it passes around, so hand it that.
+    /// </summary>
+    private static void ProcessPendingLoss(CombatManager cm)
+    {
+        var method = AccessTools.Method(typeof(CombatManager), "ProcessPendingLoss");
+        if (method is null) return;
+        object?[]? args = method.GetParameters().Length == 0
+            ? null
+            : new[] { AccessTools.Field(typeof(CombatManager), "_turnState")?.GetValue(cm) };
+        method.Invoke(cm, args);
     }
 
     /// <summary>The end of a fight: decided before the game revives anyone who fell.</summary>
@@ -228,7 +242,7 @@ internal static class Pvp
         var lobby = RunManager.Instance?.RunLobby;
         var state = RunManager.Instance?.DebugOnlyGetState();
         if (lobby is null || state is null) return;
-        var connected = lobby.ConnectedPlayerIds;
+        if (ConnectedIds(lobby) is not { } connected) return;
         ulong me = GameQuery.Me()?.NetId ?? 0;
         foreach (var p in state.Players)
         {
@@ -245,6 +259,19 @@ internal static class Pvp
                 Log.Info($"Player {p.NetId} left the match and counts as defeated");
             }
         }
+    }
+
+    /// <summary>
+    /// Who is still connected to the run. Game v0.107 has RunLobby.ConnectedPlayerIds; the v0.111 beta replaced it with
+    /// Players / PlayerIds, which drop a player when they disconnect.
+    /// </summary>
+    private static HashSet<ulong>? ConnectedIds(object lobby)
+    {
+        var type = lobby.GetType();
+        foreach (var name in new[] { "ConnectedPlayerIds", "PlayerIds" })
+            if (type.GetProperty(name)?.GetValue(lobby) is IEnumerable<ulong> ids)
+                return ids.ToHashSet();
+        return null;
     }
 
     private static void End(ulong winner)
@@ -359,9 +386,13 @@ internal static class Pvp
 }
 
 /// <summary>PvP: a fight that ends with one player standing ends the match, before the game revives anyone.</summary>
-[HarmonyPatch(typeof(CombatManager), "EndCombatInternal")]
+[HarmonyPatch]
 internal static class PvpCombatEndPatch
 {
+    // One overload in game v0.107, two in the v0.111 beta (the second takes the turn state); hold up both.
+    private static IEnumerable<System.Reflection.MethodBase> TargetMethods() =>
+        AccessTools.GetDeclaredMethods(typeof(CombatManager)).Where(m => m.Name == "EndCombatInternal");
+
     private static bool Prefix(ref Task __result)
     {
         try

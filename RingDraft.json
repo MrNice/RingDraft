@@ -3,7 +3,7 @@
   "name": "Ring Draft",
   "author": "PixeliciousLLC",
   "description": "Co-op: the player before you in the ring picks your card rewards, shops for you with your gold, chooses your Smith upgrade, and picks from your card-choice potions and relics. Combat and events stay yours. The host picks Normal, Ring Draft or Ring Draft PvP in the lobby. Everyone in the lobby needs it.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "has_pck": false,
   "has_dll": true,
   "affects_gameplay": true

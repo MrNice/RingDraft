@@ -114,9 +114,10 @@ internal static class LobbyModes
         }
 
         // Someone joined: tell them what the host picked.
-        if (_lobby.Players.Count != _playerCount)
+        int players = PlayerCount(_lobby);
+        if (players != _playerCount)
         {
-            _playerCount = _lobby.Players.Count;
+            _playerCount = players;
             if (IsHost && HostMode is { } mode) Send(mode);
         }
 
@@ -133,6 +134,13 @@ internal static class LobbyModes
             catch (Exception ex) { Log.Error("Starting the run after picking a mode failed", ex); }
         }
     }
+
+    /// <summary>
+    /// How many players are in the lobby. Read by name: the list's element type differs between game v0.107
+    /// (LobbyPlayer) and the v0.111 beta (StartRunLobbyPlayer), and one build runs on both.
+    /// </summary>
+    private static int PlayerCount(StartRunLobby lobby) =>
+        lobby.GetType().GetProperty("Players")?.GetValue(lobby) is System.Collections.ICollection list ? list.Count : 0;
 
     public static bool IsOurLobby(StartRunLobby lobby) => ReferenceEquals(lobby, _lobby);
     public static bool HostHasPicked => HostMode is not null;
