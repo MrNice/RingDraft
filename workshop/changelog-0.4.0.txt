@@ -1,0 +1,15 @@
+0.4.0
+- New: the host picks the mode in the co-op lobby (character select). The host readies up with Normal (the game as it comes), Ring Draft or Ring Draft PvP; everyone else just readies up and sees the host's pick.
+- New: Ring Draft PvP. Your picker is out to sink your deck, and the last player standing wins. The moment only one player is left alive the match is over, even mid-fight: they get Victory, everyone else gets Defeat. If everyone left falls during the same enemy turn, nobody wins. Leaving the match counts as a loss.
+- PvP: your picker can skip only one of your card rewards every 3 floors. PvP runs don't count towards unlocks, epochs or stats.
+- PvP end screens have their own lines for the winner, the losers, a tie, and anyone who fell a turn too early to share the tie (English and Simplified Chinese).
+- Rest sites: Smith now goes last. Clicking Smith waits (with a Cancel button) until everyone else has chosen, then every Smith opens at once, so everyone picks an upgrade for their neighbour at the same time instead of taking turns. With Miniature Tent you count as done once Smith is all you have left.
+- Everyone in the lobby needs 0.4.0.
+
+0.4.0（简体中文）
+- 新功能：由房主在联机大厅（角色选择界面）选择模式。房主可以用“Normal”（原版玩法）、“Ring Draft”或“Ring Draft PvP”准备；其他玩家只需准备，并会看到房主的选择。
+- 新功能：Ring Draft PvP。为你选牌的人会想方设法搞垮你的牌组，最后存活的玩家获胜。只要场上只剩一名玩家存活，对局立即结束，即使战斗仍在进行：存活者获得胜利，其他人失败。如果剩下的所有人在同一个敌人回合内倒下，则无人获胜。中途离开对局视为失败。
+- PvP：每 3 层，选牌人只能替你跳过一次卡牌奖励。PvP 对局不计入解锁、历史节点或统计数据。
+- PvP 结算画面为胜者、败者、平局，以及早一回合倒下、没能赶上平局的玩家准备了专属台词（英文和简体中文）。
+- 休息处：锻造改为最后进行。点击锻造后会进入等待（可以取消），直到其他人都做出选择，然后所有选择锻造的玩家同时打开升级界面，大家同时为邻座挑选升级，不再轮流等待。拥有微型帐篷时，只剩锻造可选即视为已选完。
+- 房间里的所有人都需要更新到 0.4.0。
