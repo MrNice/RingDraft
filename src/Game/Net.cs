@@ -36,6 +36,7 @@ internal sealed class RingNet
 
     public bool Active => _net is not null;
     public ulong LocalId => _net?.NetId ?? 0;
+    public bool IsHost => _net?.Type == NetGameType.Host;
 
     public void Poll()
     {

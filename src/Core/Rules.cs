@@ -74,6 +74,11 @@ public sealed class RulesConfig
     /// </summary>
     public bool OpenAllShops { get; set; } = true;
     /// <summary>
+    /// At a rest site, clicking Smith waits until every other player has chosen (or is waiting to Smith too), then all
+    /// the Smiths open at once, so pickers aren't pulled away from their own rest site choice one at a time.
+    /// </summary>
+    public bool SmithGoesLast { get; set; } = true;
+    /// <summary>
     /// In combat (Toolbox, a teammate's Attack/Skill/Power potion), open the picker's card screen straight away.
     /// Off: the picker gets the list with a "Show the cards" button, so nothing covers their hand mid-turn.
     /// </summary>

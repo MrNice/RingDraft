@@ -97,17 +97,40 @@ public sealed record ShopActionMsg(
 public sealed record CancelMsg(uint RequestId, ulong From, ulong To, CancelReason Reason) : Envelope(RequestId, From, To);
 
 /// <summary>
+/// Everyone → everyone (To = 0): this player clicked Smith at the rest site on floor <c>RequestId</c> and is waiting
+/// (Waiting = true) for the others to choose first, or cancelled that (false). See <see cref="SmithQueue"/>.
+/// </summary>
+public sealed record RestHoldMsg(uint RequestId, ulong From, ulong To, bool Waiting) : Envelope(RequestId, From, To);
+
+/// <summary>
+/// Everyone → everyone (To = 0). RequestId <see cref="ModeMsg.LobbyVote"/>: the mode the host readied up with in the
+/// lobby. RequestId <see cref="ModeMsg.RunAnnounce"/>: the host saying which mode the run in progress is played in
+/// (sent when a run starts or is continued, so every client agrees even if it doesn't remember).
+/// </summary>
+public sealed record ModeMsg(uint RequestId, ulong From, ulong To, RunMode Mode) : Envelope(RequestId, From, To)
+{
+    public const uint LobbyVote = 0;
+    public const uint RunAnnounce = 1;
+}
+
+/// <summary>
+/// Host → everyone (To = 0), Ring Draft PvP: the match is over. <c>Winner</c> is the last player standing, or 0 when
+/// nobody won (everyone fell on the same turn). Clients end the run the same way when they hear it.
+/// </summary>
+public sealed record PvpEndMsg(uint RequestId, ulong From, ulong To, ulong Winner) : Envelope(RequestId, From, To);
+
+/// <summary>
 /// Binary codec for envelopes. The game transport only carries strings we know how to write,
 /// so <see cref="ToBase64"/>/<see cref="TryFromBase64"/> wrap it.
 /// </summary>
 public static class Codec
 {
-    public const byte Version = 3;
+    public const byte Version = 4;
     private const int MaxList = 512;
     private const int MaxString = 4096;
     private const int MaxBlob = 2048;
 
-    private enum Tag : byte { Offer = 1, Pick = 2, ShopState = 3, ShopAction = 4, Cancel = 5 }
+    private enum Tag : byte { Offer = 1, Pick = 2, ShopState = 3, ShopAction = 4, Cancel = 5, RestHold = 6, Mode = 7, PvpEnd = 8 }
 
     public static string ToBase64(Envelope e) => Convert.ToBase64String(Encode(e));
 
@@ -169,6 +192,18 @@ public static class Codec
             case CancelMsg c:
                 w.Write((byte)Tag.Cancel); Head(w, c);
                 w.Write((byte)c.Reason);
+                break;
+            case RestHoldMsg h:
+                w.Write((byte)Tag.RestHold); Head(w, h);
+                w.Write(h.Waiting);
+                break;
+            case ModeMsg m:
+                w.Write((byte)Tag.Mode); Head(w, m);
+                w.Write((byte)m.Mode);
+                break;
+            case PvpEndMsg v:
+                w.Write((byte)Tag.PvpEnd); Head(w, v);
+                w.Write(v.Winner);
                 break;
             default:
                 throw new ArgumentException($"Unknown envelope type {e.GetType().Name}");
@@ -259,6 +294,19 @@ public static class Codec
                     envelope = new CancelMsg(id, from, to, reason);
                     break;
                 }
+                case Tag.RestHold:
+                    envelope = new RestHoldMsg(id, from, to, r.ReadBoolean());
+                    break;
+                case Tag.Mode:
+                {
+                    var mode = (RunMode)r.ReadByte();
+                    if (!Enum.IsDefined(mode)) return false;
+                    envelope = new ModeMsg(id, from, to, mode);
+                    break;
+                }
+                case Tag.PvpEnd:
+                    envelope = new PvpEndMsg(id, from, to, r.ReadUInt64());
+                    break;
                 default:
                     return false;
             }

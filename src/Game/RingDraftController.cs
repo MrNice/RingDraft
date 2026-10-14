@@ -40,6 +40,7 @@ internal partial class RingDraftController : Node
     private CardView? _pendingRemoval;
     private double _pendingRemovalSince;
     private bool _wasInCombat;
+    private double _announceUntil, _nextAnnounce;
 
     // Picker side: the game screen open for a neighbour's offer, and offers already auto-opened once.
     private (Envelope Offer, NativeScreens.Open Screen)? _native;
@@ -50,6 +51,8 @@ internal partial class RingDraftController : Node
     private readonly HashSet<(ulong, uint)> _mirrored = new();
     private readonly HashSet<ulong> _rewardButtonsTried = new();
     private double _holdNativeUntil;
+    private (ulong, uint) _smithHoldOffer;
+    private double _smithHoldUntil;
     // Picker side: the copy of a neighbour's shop on the game's merchant rug, and the state it last showed.
     private MimicShop? _mimic;
     private ShopStateMsg? _mimicShown;
@@ -76,22 +79,69 @@ internal partial class RingDraftController : Node
 
     private void Step()
     {
+        LobbyModes.Step();
         _net.Poll();
         if (!_net.Active)
         {
             if (_me != 0) Reset();
             return;
         }
+        double now = SourceTracker.Now();
         if (_me != _net.LocalId)
         {
             Reset();
             _me = _net.LocalId;
             _ledger = new OwnerLedger(_me, GD.Randi() | 1);
             _inbox = new PickerInbox(_me);
+            RunModes.Attach(now);
+            _announceUntil = now + 30;
+            _nextAnnounce = now;
             Log.Info($"Seats: {string.Join(" → ", GameQuery.SeatOrder().Select(_net.NameOf))} → (wraps)");
         }
 
-        double now = SourceTracker.Now();
+        // The run's mode, chosen in the lobby. The host repeats it for a while so clients that continue a run agree.
+        var mode = RunModes.Effective(_net.IsHost, now);
+        if (_net.IsHost && mode is { } announce && now >= _nextAnnounce && now < _announceUntil)
+        {
+            _net.Send(new ModeMsg(ModeMsg.RunAnnounce, _me, 0, announce));
+            _nextAnnounce = now + 5;
+        }
+        if (mode is not (RunMode.RingDraft or RunMode.RingDraftPvP))
+        {
+            // Normal run (or a client still hearing which it is): only listen for the host's word.
+            SmithHold.Enabled = false;
+            DrainModeOnly();
+            return;
+        }
+
+        if (mode == RunMode.RingDraftPvP)
+        {
+            Pvp.Announce ??= winner =>
+            {
+                if (!_net.IsHost) return;
+                _net.Send(new PvpEndMsg(0, _me, 0, winner));
+                After(1, () => _net.Send(new PvpEndMsg(0, _me, 0, winner)));
+            };
+            Pvp.Step(now, _net.IsHost);
+            if (Pvp.Ended)
+            {
+                // The match is over: nothing more to pick for anyone.
+                if (_active is { } done) ReleaseBlocker(done);
+                _active = null;
+                CloseNative();
+                CloseMimic();
+                _panel.HideAll();
+                SmithHold.Enabled = false;
+                while (_net.TryReceive(out _, out _)) { }
+                RunJobs(now);
+                return;
+            }
+        }
+
+        SmithHold.Enabled = Config.Rules.DelegateSmith && Config.Rules.SmithGoesLast;
+        SmithHold.Broadcast ??= (floor, waiting) => _net.Send(new RestHoldMsg(floor, _me, 0, waiting));
+        SmithHold.NameOf = _net.NameOf;
+
         TrackContext(now);
         Drain(now);
         RunJobs(now);
@@ -101,6 +151,9 @@ internal partial class RingDraftController : Node
 
     private void Reset()
     {
+        SmithHold.Enabled = false;
+        SmithHold.Queue.Clear();
+        _announceUntil = 0;
         if (_active is { } a) ReleaseBlocker(a);
         _active = null;
         _handled.Clear();
@@ -161,12 +214,23 @@ internal partial class RingDraftController : Node
             {
                 case PickMsg p: OnPick(p, sender); break;
                 case ShopActionMsg a: OnShopAction(a, sender, now); break;
+                case RestHoldMsg h when h.From == sender: SmithHold.Queue.Set(sender, h.RequestId, h.Waiting); break;
+                case ModeMsg m when m.RequestId == ModeMsg.RunAnnounce && !_net.IsHost: RunModes.Announced(m.Mode); break;
+                case ModeMsg: break;
+                case PvpEndMsg e when e.From == sender && !_net.IsHost: Pvp.Heard(e.Winner); break;
+                case PvpEndMsg: break;
                 default:
                     if (_inbox?.Receive(env, sender) == true)
                         Log.Info($"{env.GetType().Name} #{env.RequestId} from {_net.NameOf(sender)}");
                     break;
             }
         }
+    }
+
+    private void DrainModeOnly()
+    {
+        while (_net.TryReceive(out var env, out _))
+            if (env is ModeMsg { RequestId: ModeMsg.RunAnnounce } m && !_net.IsHost) RunModes.Announced(m.Mode);
     }
 
     // ---------------------------------------------------------------- owner side
@@ -273,6 +337,12 @@ internal partial class RingDraftController : Node
         max = Math.Min(max, choices);
         min = Math.Min(min, max);
         bool canSkip = kind != DecisionKind.Bundle && !deckChoice && UiDriver.HasSkip(screen);
+        // PvP: one card reward skip every 3 floors, or the pickers would just skip the cards that help you.
+        if (canSkip && kind == DecisionKind.CardReward && Pvp.InPvpRun && !Pvp.Skips.CanSkip(Pvp.Floor()))
+        {
+            canSkip = false;
+            Log.Info("No skip left this stretch of floors: your picker has to take a card");
+        }
         var decision = _ledger!.Open(kind, picker, choices, canSkip, now, timeout, min, max);
 
         _net.Send(new OfferMsg(decision.RequestId, _me, picker, kind, options, canSkip,
@@ -336,6 +406,11 @@ internal partial class RingDraftController : Node
                 : p.OptionIndex == -1 ? UiDriver.PressSkip(a.Screen)
                 : p.Chosen.All(i => UiDriver.PressHolder(a.Screen, i));
         if (ok && a.Kind != DecisionKind.Bundle) WarnIfStillOpen(a.Screen, a.Kind);
+        if (ok && a.Kind == DecisionKind.CardReward && p.OptionIndex == -1 && Pvp.InPvpRun)
+        {
+            Pvp.Skips.Used(Pvp.Floor());
+            Log.Info("Skip used; the next one comes back in a few floors");
+        }
         if (!ok)
         {
             Log.Warn($"Couldn't apply pick #{p.RequestId} (option {p.OptionIndex}); the screen is yours");
@@ -463,6 +538,21 @@ internal partial class RingDraftController : Node
 
         if (current is OfferMsg offer && _native is null && ShouldAutoOpen(offer))
         {
+            // Both Smithing: our own upgrade screen opens first (and goes to our picker), then the neighbour's on top
+            // of it, so each picker chooses for their neighbour at the same time instead of waiting behind a locked screen.
+            if (offer.Kind == DecisionKind.SmithUpgrade && _active is null && SmithHold.OwnSmithComing(now))
+            {
+                if (_smithHoldOffer != (offer.From, offer.RequestId))
+                {
+                    _smithHoldOffer = (offer.From, offer.RequestId);
+                    _smithHoldUntil = now + 4;
+                }
+                if (now < _smithHoldUntil)
+                {
+                    _panel.SetSuppressed(true);
+                    return;
+                }
+            }
             // A neighbour opened a card reward: open ours too, and let it reach our picker before we start choosing.
             if (offer.Kind == DecisionKind.CardReward && _mirrored.Add((offer.From, offer.RequestId)) && OpenMyCardRewardToo(now))
                 _holdNativeUntil = now + 2.5;

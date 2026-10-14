@@ -117,6 +117,12 @@ const ulong A = 101, B = 202, C = 303, D = 404;
         }, deck, "Bought Pommel Strike", 90),
         new ShopActionMsg(9, B, A, ShopActionType.Remove, 5, 1),
         new CancelMsg(9, A, B, CancelReason.OwnerTookOver),
+        new RestHoldMsg(12, A, 0, true),
+        new RestHoldMsg(12, B, 0, false),
+        new ModeMsg(ModeMsg.LobbyVote, A, 0, RunMode.RingDraftPvP),
+        new ModeMsg(ModeMsg.RunAnnounce, B, 0, RunMode.Normal),
+        new PvpEndMsg(0, A, 0, B),
+        new PvpEndMsg(0, A, 0, 0),
     };
 
     foreach (var m in msgs)
@@ -288,6 +294,78 @@ const ulong A = 101, B = 202, C = 303, D = 404;
     inbox.Complete(D, 1);
     Check(inbox.Current is ShopStateMsg s && s.Gold == 50, "refreshed shop state is current");
     Check(!inbox.Receive(new PickMsg(1, B, A, 0), B), "picks never enter the inbox");
+}
+
+// ---------- Smith goes last at the rest site ----------
+{
+    var q = new SmithQueue();
+    const uint floor = 6;
+    SmithQueue.Other Choosing(ulong id) => new(id, true);
+    SmithQueue.Other Done(ulong id) => new(id, false);
+
+    Check(!q.CanSmithNow(new[] { Choosing(B), Done(C) }, floor), "someone still choosing: wait");
+    Check(q.WaitingOn(new[] { Choosing(B), Done(C), Choosing(D) }, floor).SequenceEqual(new[] { B, D }), "waiting on exactly the choosers");
+    Check(q.CanSmithNow(new[] { Done(B), Done(C) }, floor), "everyone else done: smith now");
+    Check(q.CanSmithNow(Array.Empty<SmithQueue.Other>(), floor), "solo: smith now");
+
+    q.Set(B, floor, true);
+    Check(q.CanSmithNow(new[] { Choosing(B), Done(C) }, floor), "other player waiting to smith counts as ready");
+    Check(!q.CanSmithNow(new[] { Choosing(B) }, floor + 1), "a wait from an earlier rest site doesn't count");
+    q.Set(B, floor, false);
+    Check(!q.CanSmithNow(new[] { Choosing(B) }, floor), "cancelled wait: back to waiting on them");
+
+    // Miniature Tent: still has Rest left after Lift, so they're still choosing; with only Smith left they're done.
+    Check(!q.CanSmithNow(new[] { Choosing(C) }, floor) && q.CanSmithNow(new[] { Done(C) }, floor), "tent player done only when only Smith is left");
+
+    q.Set(B, floor, true); q.Set(C, floor, true);
+    Check(q.CanSmithNow(new[] { Choosing(B), Choosing(C) }, floor), "everyone waiting to smith: all go at once");
+    q.Clear();
+    Check(!q.IsWaiting(B, floor), "clear forgets waits");
+}
+
+// ---------- Lobby mode messages ----------
+{
+    var bad = Codec.Encode(new ModeMsg(0, A, 0, RunMode.RingDraft));
+    bad[^1] = 9;
+    Check(!Codec.TryDecode(bad, out _), "unknown mode rejected");
+}
+
+// ---------- PvP ----------
+{
+    Check(PvpRules.SkipWindow(1) == 0 && PvpRules.SkipWindow(3) == 0 && PvpRules.SkipWindow(4) == 1 && PvpRules.SkipWindow(7) == 2, "skip windows are 3 floors");
+    Check(PvpRules.SkipWindow(0) == 0, "floor 0 is the first window");
+    var charges = new SkipCharges();
+    Check(charges.CanSkip(1), "first skip allowed");
+    charges.Used(2);
+    Check(!charges.CanSkip(2) && !charges.CanSkip(3), "one skip per window");
+    Check(charges.CanSkip(4), "skip comes back after 3 floors");
+    charges.Used(5);
+    Check(!charges.CanSkip(6) && charges.CanSkip(7), "and again");
+    charges.Reset();
+    Check(charges.CanSkip(6), "reset gives the skip back");
+
+    Check(PvpRules.Victor(new[] { (A, true), (B, true) }) is null, "both alive: no victor");
+    Check(PvpRules.Victor(new[] { (A, false), (B, true) }) == B, "last one standing wins");
+    Check(PvpRules.Victor(new[] { (A, false), (B, false) }) == 0UL, "both fell: nobody wins");
+    Check(PvpRules.Victor(new[] { (A, true), (B, false), (C, true) }) is null, "three players, two alive: keep going");
+    Check(PvpRules.Victor(new[] { (A, false), (B, false), (C, true) }) == C, "three players, one alive: they win");
+    Check(PvpRules.Victor(new[] { (A, true) }) is null, "solo: nothing to win");
+    Check(PvpRules.InTie(5, 5) && PvpRules.InTie(null, 5), "fell on the final turn (or as the final blow): in the tie");
+    Check(!PvpRules.InTie(4, 5), "fell a turn earlier: missed the tie");
+}
+
+// ---------- PvP tie text ----------
+{
+    Check(PvpText.For("zhs") == PvpText.SimplifiedChinese && PvpText.For("eng") == PvpText.English, "tie text by language");
+    Check(PvpText.For("fra") == PvpText.English && PvpText.For(null) == PvpText.English, "other languages get English");
+    foreach (var (name, pick) in new (string, Func<PvpText.Lines, IReadOnlyList<string>>)[]
+             { ("tie", l => l.TieQuotes), ("near-tie", l => l.NearTieQuotes), ("loss", l => l.LossQuotes) })
+    {
+        var en = pick(PvpText.English);
+        var zh = pick(PvpText.SimplifiedChinese);
+        Check(en.Count == 8 && zh.Count == 8, $"8 {name} quotes in both languages");
+        Check(en.Concat(zh).All(q => q.Trim().Length > 0) && en.Distinct().Count() == 8 && zh.Distinct().Count() == 8, $"{name} quotes non-empty and distinct");
+    }
 }
 
 Console.WriteLine($"{passes} passed, {failures} failed");
